@@ -19,6 +19,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import os
 import sys
+import argparse
 import pickle
 from typing import Tuple, Dict
 import time
@@ -68,10 +69,25 @@ MODEL_V95_BEST_PATH = './pinn_thin_layer_catalytic_v9_5_best.pth'
 MODEL_V96_PATH = './pinn_thin_layer_catalytic_v9_6.pth'
 MODEL_V96_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_best.pth'
 
+USE_NORMALIZED_COORDS = True
+
+
+def normalize_time(T):
+    return 2.0 * T / T_sim - 1.0
+
+
+def normalize_thin_x(X):
+    return 2.0 * X / delta - 1.0
+
+
+def normalize_ext_x(X):
+    return 2.0 * (X - delta) / (X_ext_max - delta) - 1.0
+
 # ==================== 网络架构（与 v9.5 相同）====================
 class ThinLayerNet_v9_6(nn.Module):
-    def __init__(self):
+    def __init__(self, normalize_inputs=True):
         super().__init__()
+        self.normalize_inputs = normalize_inputs
         self.net = nn.Sequential(
             nn.Linear(2, 256), nn.Tanh(),
             nn.Linear(256, 256), nn.Tanh(),
@@ -81,6 +97,11 @@ class ThinLayerNet_v9_6(nn.Module):
         )
 
     def forward(self, x_input):
+        if self.normalize_inputs:
+            x_input = torch.cat([
+                normalize_time(x_input[:, 0:1]),
+                normalize_thin_x(x_input[:, 1:2])
+            ], dim=1)
         raw = self.net(x_input)
         conc_normalized = F.softmax(raw, dim=1)
         C_A = conc_normalized[:, 0:1]
@@ -89,9 +110,10 @@ class ThinLayerNet_v9_6(nn.Module):
 
 
 class ExternalNet_v9_6(nn.Module):
-    def __init__(self, gamma_val):
+    def __init__(self, gamma_val, normalize_inputs=True):
         super().__init__()
         self.gamma = gamma_val
+        self.normalize_inputs = normalize_inputs
         self.net = nn.Sequential(
             nn.Linear(2, 256), nn.Tanh(),
             nn.Linear(256, 256), nn.Tanh(),
@@ -101,6 +123,11 @@ class ExternalNet_v9_6(nn.Module):
         )
 
     def forward(self, x_input):
+        if self.normalize_inputs:
+            x_input = torch.cat([
+                normalize_time(x_input[:, 0:1]),
+                normalize_ext_x(x_input[:, 1:2])
+            ], dim=1)
         raw = self.net(x_input)
         C_C = torch.sigmoid(raw) * self.gamma
         C_D = self.gamma - C_C
@@ -605,13 +632,13 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
 
 
 # ==================== 预测与可视化 ====================
-def predict_and_visualize_v9_6(model_thin, model_ext, loss_history, gamma):
+def predict_and_visualize_v9_6(model_thin, model_ext, loss_history, gamma, n_cv=8000):
     device = next(model_thin.parameters()).device
     model_thin.eval()
     model_ext.eval()
 
     # CV curve
-    T_grid = torch.linspace(0, T_sim, 300, device=device).reshape(-1, 1)
+    T_grid = torch.linspace(0, T_sim, n_cv, device=device).reshape(-1, 1)
     T_surf = T_grid.clone()
     X_surf = torch.zeros_like(T_surf)
     X_surf.requires_grad_(True)
@@ -859,23 +886,124 @@ def predict_and_visualize_v9_6(model_thin, model_ext, loss_history, gamma):
     }
 
 
+def save_cv_csv(results, path="./cv_theta_J_v9_6.csv"):
+    df_cv = pd.DataFrame({
+        "theta": results['theta'],
+        "J": results['J']
+    })
+    df_cv.to_csv(path, index=False, encoding="utf-8-sig")
+    print(f"CV theta-J data saved to: {path}")
+
+
+def compare_with_fdm(results, fdm_csv_path="../FDM/v41_cv_data_fixed.csv"):
+    if not os.path.exists(fdm_csv_path):
+        print(f"FDM comparison skipped; file not found: {fdm_csv_path}")
+        return None
+
+    fdm = pd.read_csv(fdm_csv_path, encoding="utf-8-sig")
+    fdm_theta = fdm["theta"].to_numpy(dtype=float)
+    fdm_J = fdm["J"].to_numpy(dtype=float)
+    pinn_theta = np.asarray(results["theta"], dtype=float)
+    pinn_J = np.asarray(results["J"], dtype=float)
+
+    if len(pinn_J) != len(fdm_J):
+        src = np.linspace(0.0, 1.0, len(pinn_J))
+        dst = np.linspace(0.0, 1.0, len(fdm_J))
+        pinn_J_cmp = np.interp(dst, src, pinn_J)
+        pinn_theta_cmp = np.interp(dst, src, pinn_theta)
+    else:
+        pinn_J_cmp = pinn_J
+        pinn_theta_cmp = pinn_theta
+
+    diff = pinn_J_cmp - fdm_J
+    fdm_peak_idx = int(np.argmin(fdm_J))
+    pinn_peak_idx = int(np.argmin(pinn_J_cmp))
+    metrics = {
+        "rmse_J": float(np.sqrt(np.mean(diff**2))),
+        "mae_J": float(np.mean(np.abs(diff))),
+        "max_abs_J": float(np.max(np.abs(diff))),
+        "fdm_peak_J": float(fdm_J[fdm_peak_idx]),
+        "fdm_peak_theta": float(fdm_theta[fdm_peak_idx]),
+        "pinn_peak_J": float(pinn_J_cmp[pinn_peak_idx]),
+        "pinn_peak_theta": float(pinn_theta_cmp[pinn_peak_idx]),
+        "peak_J_error": float(pinn_J_cmp[pinn_peak_idx] - fdm_J[fdm_peak_idx]),
+        "peak_theta_error": float(pinn_theta_cmp[pinn_peak_idx] - fdm_theta[fdm_peak_idx]),
+    }
+
+    print("\n" + "="*80)
+    print("PINN vs FDM CV comparison")
+    print("="*80)
+    print(f"J RMSE:          {metrics['rmse_J']:.6e}")
+    print(f"J MAE:           {metrics['mae_J']:.6e}")
+    print(f"J max abs error: {metrics['max_abs_J']:.6e}")
+    print(f"FDM peak:        {metrics['fdm_peak_J']:.6f} @ theta={metrics['fdm_peak_theta']:.4f}")
+    print(f"PINN peak:       {metrics['pinn_peak_J']:.6f} @ theta={metrics['pinn_peak_theta']:.4f}")
+    print(f"Peak J error:    {metrics['peak_J_error']:.6f}")
+    print(f"Peak theta err:  {metrics['peak_theta_error']:.6f}")
+    print("="*80)
+    return metrics
+
+
 # ==================== 主程序 ====================
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train or evaluate PINN v9.6.")
+    parser.add_argument("--epochs", type=int, default=30000)
+    parser.add_argument("--eval-only", action="store_true",
+                        help="Load a checkpoint and export CV data without training.")
+    parser.add_argument("--checkpoint", default=MODEL_V96_BEST_PATH,
+                        help="Checkpoint used by --eval-only.")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from pinn_thin_layer_catalytic_v9_6.pth.")
+    parser.add_argument("--legacy-inputs", action="store_true",
+                        help="Use raw coordinates for old v9.6 checkpoints.")
+    parser.add_argument("--cv-points", type=int, default=8000)
+    parser.add_argument("--fdm-csv", default="../FDM/v41_cv_data_fixed.csv")
+    args = parser.parse_args()
+
+    USE_NORMALIZED_COORDS = not args.legacy_inputs
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
+    print(f"Normalized coordinates: {USE_NORMALIZED_COORDS}")
 
-    model_thin = ThinLayerNet_v9_6().to(device)
-    model_ext = ExternalNet_v9_6(gamma).to(device)
+    model_thin = ThinLayerNet_v9_6(normalize_inputs=USE_NORMALIZED_COORDS).to(device)
+    model_ext = ExternalNet_v9_6(gamma, normalize_inputs=USE_NORMALIZED_COORDS).to(device)
 
     total_params = (sum(p.numel() for p in model_thin.parameters()) + 
                    sum(p.numel() for p in model_ext.parameters()))
     print(f"Total trainable parameters: {total_params:,}")
 
+    if args.eval_only:
+        params = list(model_thin.parameters()) + list(model_ext.parameters())
+        optimizer = torch.optim.AdamW(params, lr=5e-5, weight_decay=1e-4)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1, eta_min=1e-7)
+        loaded_epoch, loss_history, _ = load_model_v96(
+            model_thin, model_ext, optimizer, scheduler, args.checkpoint
+        )
+        if loaded_epoch == 0 and not os.path.exists(args.checkpoint):
+            raise FileNotFoundError(args.checkpoint)
+        if not loss_history:
+            loss_history = {
+                'total': [], 'pde_thin': [], 'pde_ext': [], 'surface': [],
+                'farfield': [], 'initial': [], 'interface': [], 'lr': [],
+                'nernst_err': []
+            }
+        print(f"\nEvaluating checkpoint: {args.checkpoint}")
+        validate_model(model_thin, model_ext, device, loaded_epoch, verbose=True)
+        results = predict_and_visualize_v9_6(
+            model_thin, model_ext, loss_history, gamma, n_cv=args.cv_points
+        )
+        save_cv_csv(results)
+        compare_with_fdm(results, args.fdm_csv)
+        sys.exit(0)
+
     # 加载 v9.5 best 作为初始权重
     start_epoch = 0
     loaded_from = ""
 
-    if os.path.exists(MODEL_V95_BEST_PATH):
+    if os.path.exists(MODEL_V95_BEST_PATH) and USE_NORMALIZED_COORDS:
+        print("\nNormalized-coordinate training starts from scratch.")
+        print("Old raw-coordinate checkpoints are not used as initial weights.")
+    elif os.path.exists(MODEL_V95_BEST_PATH):
         checkpoint = torch.load(MODEL_V95_BEST_PATH, map_location='cpu', weights_only=False)
         model_thin.load_state_dict(checkpoint['model_thin_state_dict'], strict=False)
         model_ext.load_state_dict(checkpoint['model_ext_state_dict'])
@@ -898,9 +1026,9 @@ if __name__ == "__main__":
 
     loss_history, best_results = train_model_v9_6(
         model_thin, model_ext, 
-        n_epochs=30000,
+        n_epochs=args.epochs,
         start_epoch=start_epoch,
-        resume=False
+        resume=args.resume
     )
 
     # 可视化
@@ -924,7 +1052,9 @@ if __name__ == "__main__":
     #         }, f)
     #     print(f"\nDetailed results saved to: ./results_thin_layer_catalytic_v9_6.pkl")
     if loss_history and len(loss_history['total']) > 0:
-        results = predict_and_visualize_v9_6(model_thin, model_ext, loss_history, gamma)
+        results = predict_and_visualize_v9_6(
+            model_thin, model_ext, loss_history, gamma, n_cv=args.cv_points
+        )
 
         # 保存完整 pkl
         with open('./results_thin_layer_catalytic_v9_6.pkl', 'wb') as f:
@@ -946,18 +1076,8 @@ if __name__ == "__main__":
         print(f"\nDetailed results saved to: ./results_thin_layer_catalytic_v9_6.pkl")
 
         # 单独保存 theta 和 J 到 CSV
-        df_cv = pd.DataFrame({
-            "theta": results['theta'],
-            "J": results['J']
-        })
-
-        df_cv.to_csv(
-            "./cv_theta_J_v9_6.csv",
-            index=False,
-            encoding="utf-8-sig"
-        )
-
-        print("CV theta-J data saved to: ./cv_theta_J_v9_6.csv")
+        save_cv_csv(results)
+        compare_with_fdm(results, args.fdm_csv)
 
     print(f"\n{'='*80}")
     print("v9.6 model training completed")
