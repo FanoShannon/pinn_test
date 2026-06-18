@@ -68,6 +68,8 @@ print(f"Simulation time T_sim = {T_sim:.4f}")
 MODEL_V95_BEST_PATH = './pinn_thin_layer_catalytic_v9_5_best.pth'
 MODEL_V96_PATH = './pinn_thin_layer_catalytic_v9_6.pth'
 MODEL_V96_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_best.pth'
+MODEL_V96_MULTISCALE_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale.pth'
+MODEL_V96_MULTISCALE_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_best.pth'
 
 USE_NORMALIZED_COORDS = True
 
@@ -82,6 +84,18 @@ def normalize_thin_x(X):
 
 def normalize_ext_x(X):
     return 2.0 * (X - delta) / (X_ext_max - delta) - 1.0
+
+
+def sample_external_x(n_points, device, near_fraction=0.75):
+    n_near = int(n_points * near_fraction)
+    n_uniform = n_points - n_near
+    boundary_layer = min(0.5, 12.0 * delta)
+    x_near = delta + boundary_layer * torch.rand(n_near, 1, device=device) ** 2
+    x_uniform = delta + torch.rand(n_uniform, 1, device=device) * (X_ext_max - delta)
+    if n_uniform > 0:
+        x_all = torch.cat([x_near, x_uniform], dim=0)
+        return x_all[torch.randperm(n_points, device=device)]
+    return x_near
 
 # ==================== 网络架构（与 v9.5 相同）====================
 class ThinLayerNet_v9_6(nn.Module):
@@ -132,6 +146,105 @@ class ExternalNet_v9_6(nn.Module):
         C_C = torch.sigmoid(raw) * self.gamma
         C_D = self.gamma - C_C
         return C_C, C_D
+
+
+class FourierFeatureLayer(nn.Module):
+    def __init__(self, in_features=2, frequencies=(1.0, 2.0, 4.0, 8.0, 16.0)):
+        super().__init__()
+        self.register_buffer("frequencies", torch.tensor(frequencies, dtype=torch.float32))
+        self.out_features = in_features * (1 + 2 * len(frequencies))
+
+    def forward(self, x):
+        features = [x]
+        for freq in self.frequencies:
+            scaled = np.pi * freq * x
+            features.append(torch.sin(scaled))
+            features.append(torch.cos(scaled))
+        return torch.cat(features, dim=1)
+
+
+class ResidualMLPBlock(nn.Module):
+    def __init__(self, width):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Linear(width, width),
+            nn.Tanh(),
+            nn.Linear(width, width),
+        )
+        self.activation = nn.Tanh()
+
+    def forward(self, x):
+        return self.activation(x + self.block(x))
+
+
+class MultiscaleResidualHead(nn.Module):
+    def __init__(self, out_features, width=256, depth=5):
+        super().__init__()
+        self.features = FourierFeatureLayer()
+        layers = [nn.Linear(self.features.out_features, width), nn.Tanh()]
+        for _ in range(depth):
+            layers.append(ResidualMLPBlock(width))
+        layers.append(nn.Linear(width, out_features))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(self.features(x))
+
+
+class ThinLayerNet_v9_6_Multiscale(nn.Module):
+    def __init__(self, normalize_inputs=True):
+        super().__init__()
+        self.normalize_inputs = normalize_inputs
+        self.net = MultiscaleResidualHead(out_features=2, width=256, depth=5)
+
+    def forward(self, x_input):
+        if self.normalize_inputs:
+            x_input = torch.cat([
+                normalize_time(x_input[:, 0:1]),
+                normalize_thin_x(x_input[:, 1:2])
+            ], dim=1)
+        raw = self.net(x_input)
+        conc_normalized = F.softmax(raw, dim=1)
+        C_A = conc_normalized[:, 0:1]
+        C_B = conc_normalized[:, 1:2]
+        return C_A, C_B
+
+
+class ExternalNet_v9_6_Multiscale(nn.Module):
+    def __init__(self, gamma_val, normalize_inputs=True):
+        super().__init__()
+        self.gamma = gamma_val
+        self.normalize_inputs = normalize_inputs
+        self.net = MultiscaleResidualHead(out_features=1, width=256, depth=5)
+
+    def forward(self, x_input):
+        T_raw = x_input[:, 0:1]
+        X_raw = x_input[:, 1:2]
+        if self.normalize_inputs:
+            x_input = torch.cat([
+                normalize_time(T_raw),
+                normalize_ext_x(X_raw)
+            ], dim=1)
+        raw = self.net(x_input)
+        time_gate = torch.clamp(T_raw / T_sim, 0.0, 1.0)
+        farfield_gate = 1.0 - torch.clamp((X_raw - delta) / (X_ext_max - delta), 0.0, 1.0)
+        C_D = self.gamma * time_gate * farfield_gate * torch.sigmoid(raw)
+        C_C = self.gamma - C_D
+        return C_C, C_D
+
+
+def create_models_v96(arch="legacy", normalize_inputs=True):
+    if arch == "legacy":
+        return (
+            ThinLayerNet_v9_6(normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6(gamma, normalize_inputs=normalize_inputs),
+        )
+    if arch == "multiscale":
+        return (
+            ThinLayerNet_v9_6_Multiscale(normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6_Multiscale(gamma, normalize_inputs=normalize_inputs),
+        )
+    raise ValueError(f"Unknown architecture: {arch}")
 
 
 def potential_theta(T):
@@ -315,7 +428,8 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
 
 
 # ==================== v9.6 训练函数 - 界面耦合增强 ====================
-def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resume=False):
+def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resume=False,
+                     early_stop=True):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     model_thin.to(device)
@@ -373,7 +487,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
 
         # ========== 2. External region sampling ==========
         T_ext = torch.rand(n_points, 1, device=device) * T_sim
-        X_ext = delta + torch.rand(n_points, 1, device=device) * (X_ext_max - delta)
+        X_ext = sample_external_x(n_points, device)
         T_ext.requires_grad_(True)
         X_ext.requires_grad_(True)
 
@@ -462,10 +576,16 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         C_A_ini, C_B_ini = model_thin(torch.cat([T_ini, X_ini_thin], dim=1))
         C_C_ini, C_D_ini = model_ext(torch.cat([T_ini, X_ini_ext], dim=1))
 
+        T_ini_int = torch.zeros(n_points // 10, 1, device=device)
+        X_ini_int = torch.ones_like(T_ini_int) * delta
+        C_C_ini_int, C_D_ini_int = model_ext(torch.cat([T_ini_int, X_ini_int], dim=1))
+
         loss_initial = (torch.mean((C_A_ini - 1.0)**2) + 
                        torch.mean(C_B_ini**2) + 
                        torch.mean((C_C_ini - gamma)**2) + 
-                       torch.mean(C_D_ini**2))
+                       torch.mean(C_D_ini**2) +
+                       2.0 * torch.mean((C_C_ini_int - gamma)**2) +
+                       2.0 * torch.mean(C_D_ini_int**2))
 
         # 3.6 Interface coupling - v9.6: 保持 v9.5 符号不变
         # 经分析，v9.5 的符号与 FDM 等价，只是定义不同
@@ -562,17 +682,12 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             else:
                 no_improve += 500
 
-            if no_improve > patience and epoch > start_epoch + 8000:
+            if early_stop and no_improve > patience and epoch > start_epoch + 8000:
                 print(f"\n{'='*60}")
                 print(f"Early stopping at epoch {epoch}")
                 print(f"Best Nernst error: {best_nernst:.4e} at epoch {best_epoch}")
                 print(f"{'='*60}")
                 break
-
-            if (epoch + 1) % 2000 == 0:
-                save_model_v96(model_thin, model_ext, optimizer, scheduler,
-                             epoch + 1, MODEL_V96_PATH,
-                             loss_history=loss_history, best_val_loss=best_nernst)
 
         # 进度输出
         if epoch % 500 == 0:
@@ -612,6 +727,11 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             if epoch % 2000 == 0 and epoch > start_epoch:
                 phys_results = verify_interface_physics(model_thin, model_ext, device)
                 print_physics_verification(phys_results)
+
+        if (epoch + 1) % 2000 == 0:
+            save_model_v96(model_thin, model_ext, optimizer, scheduler,
+                         epoch + 1, MODEL_V96_PATH,
+                         loss_history=loss_history, best_val_loss=best_nernst)
 
     # Final save
     save_model_v96(model_thin, model_ext, optimizer, scheduler,
@@ -958,15 +1078,25 @@ if __name__ == "__main__":
                         help="Use raw coordinates for old v9.6 checkpoints.")
     parser.add_argument("--cv-points", type=int, default=8000)
     parser.add_argument("--fdm-csv", default="../FDM/v41_cv_data_fixed.csv")
+    parser.add_argument("--arch", choices=["legacy", "multiscale"], default="legacy")
+    parser.add_argument("--no-early-stop", action="store_true",
+                        help="Disable early stopping and run exactly --epochs epochs.")
     args = parser.parse_args()
+
+    if args.arch == "multiscale":
+        if args.checkpoint == MODEL_V96_BEST_PATH:
+            args.checkpoint = MODEL_V96_MULTISCALE_BEST_PATH
+        MODEL_V96_PATH = MODEL_V96_MULTISCALE_PATH
+        MODEL_V96_BEST_PATH = MODEL_V96_MULTISCALE_BEST_PATH
 
     USE_NORMALIZED_COORDS = not args.legacy_inputs
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     print(f"Normalized coordinates: {USE_NORMALIZED_COORDS}")
 
-    model_thin = ThinLayerNet_v9_6(normalize_inputs=USE_NORMALIZED_COORDS).to(device)
-    model_ext = ExternalNet_v9_6(gamma, normalize_inputs=USE_NORMALIZED_COORDS).to(device)
+    model_thin, model_ext = create_models_v96(args.arch, normalize_inputs=USE_NORMALIZED_COORDS)
+    model_thin = model_thin.to(device)
+    model_ext = model_ext.to(device)
 
     total_params = (sum(p.numel() for p in model_thin.parameters()) + 
                    sum(p.numel() for p in model_ext.parameters()))
@@ -1000,7 +1130,10 @@ if __name__ == "__main__":
     start_epoch = 0
     loaded_from = ""
 
-    if os.path.exists(MODEL_V95_BEST_PATH) and USE_NORMALIZED_COORDS:
+    if args.arch != "legacy":
+        print(f"\nArchitecture '{args.arch}' starts from scratch.")
+        print("Legacy checkpoints are not loaded into the multiscale network.")
+    elif os.path.exists(MODEL_V95_BEST_PATH) and USE_NORMALIZED_COORDS:
         print("\nNormalized-coordinate training starts from scratch.")
         print("Old raw-coordinate checkpoints are not used as initial weights.")
     elif os.path.exists(MODEL_V95_BEST_PATH):
@@ -1028,7 +1161,8 @@ if __name__ == "__main__":
         model_thin, model_ext, 
         n_epochs=args.epochs,
         start_epoch=start_epoch,
-        resume=args.resume
+        resume=args.resume,
+        early_stop=not args.no_early_stop
     )
 
     # 可视化
