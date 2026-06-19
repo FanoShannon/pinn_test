@@ -774,7 +774,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 # v9.6: 检查界面浓度
                 T_int_test = torch.rand(50, 1, device=device) * T_sim
                 X_int_test = torch.ones_like(T_int_test) * delta
-                C_B_int_test, _ = model_thin(torch.cat([T_int_test, X_int_test], dim=1))
+                _, C_B_int_test = model_thin(torch.cat([T_int_test, X_int_test], dim=1))
                 C_C_int_test, _ = model_ext(torch.cat([T_int_test, X_int_test], dim=1))
                 J_rxn_test = (k_cat_star * C_B_int_test * C_C_int_test).mean().item()
 

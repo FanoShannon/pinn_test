@@ -64,12 +64,15 @@ def field_metrics(pinn_field, fdm_field):
     diff = pinn_field - fdm_field
     ss_res = float(np.sum(diff**2))
     ss_tot = float(np.sum((fdm_field - np.mean(fdm_field)) ** 2))
+    fdm_range = float(np.max(fdm_field) - np.min(fdm_field))
+    rmse = float(np.sqrt(np.mean(diff**2)))
     return {
-        "rmse": float(np.sqrt(np.mean(diff**2))),
+        "rmse": rmse,
         "mae": float(np.mean(np.abs(diff))),
         "max_abs": float(np.max(np.abs(diff))),
         "bias": float(np.mean(diff)),
         "r2": float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan"),
+        "nrmse": float(rmse / fdm_range) if fdm_range > 0 else float("nan"),
         "fdm_min": float(np.min(fdm_field)),
         "fdm_max": float(np.max(fdm_field)),
         "pinn_min": float(np.min(pinn_field)),
