@@ -554,7 +554,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     loss_history = {
         'total': [], 'pde_thin': [], 'pde_ext': [], 'surface': [],
         'farfield': [], 'initial': [], 'interface': [], 'lr': [],
-        'nernst_err': [], 'surface_state': []
+        'nernst_err': [], 'surface_state': [], 'physics_score': []
     }
 
     best_score = float('inf')
@@ -786,6 +786,14 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             base_weights['initial'] * loss_initial +
             base_weights['interface'] * loss_interface
         )
+        physics_score = (
+            10.0 * loss_pde_thin +
+            10.0 * loss_pde_ext +
+            100.0 * loss_surface +
+            loss_farfield +
+            loss_initial +
+            200.0 * loss_interface
+        )
 
         # ========== 5. Optimization ==========
         optimizer.zero_grad()
@@ -807,11 +815,12 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         loss_history['lr'].append(optimizer.param_groups[0]['lr'])
         loss_history['nernst_err'].append(nernst_err)
         loss_history['surface_state'].append(loss_surface_state.item())
+        loss_history.setdefault('physics_score', []).append(physics_score.item())
 
         # ========== 7. Validation & Early stopping ==========
         if epoch % 500 == 0:
             val_results = validate_model(model_thin, model_ext, device, epoch, verbose=True)
-            save_score = total_loss.item()
+            save_score = physics_score.item()
 
             if save_score < best_score:
                 best_score = save_score
@@ -858,6 +867,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 J_rxn_test = (k_cat_star * C_B_int_test * C_C_int_test).mean().item()
 
             print(f"\nEpoch {epoch:5d} | Total: {total_loss.item():.4e}")
+            print(f"  Physics score: {physics_score.item():.4e}")
             print(f"  PDE_thin: {loss_pde_thin.item():.4e} | PDE_ext: {loss_pde_ext.item():.4e}")
             print(f"  Surface: {loss_surface.item():.4e} (w={base_weights['surface']:.2f})")
             print(f"  Surface state: {loss_surface_state.item():.4e}")
@@ -1268,7 +1278,7 @@ if __name__ == "__main__":
             loss_history = {
                 'total': [], 'pde_thin': [], 'pde_ext': [], 'surface': [],
                 'farfield': [], 'initial': [], 'interface': [], 'lr': [],
-                'nernst_err': [], 'surface_state': []
+                'nernst_err': [], 'surface_state': [], 'physics_score': []
             }
         print(f"\nEvaluating checkpoint: {args.checkpoint}")
         validate_model(model_thin, model_ext, device, loaded_epoch, verbose=True)
