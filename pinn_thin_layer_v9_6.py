@@ -133,6 +133,31 @@ def sample_thin_x(n_points, device, boundary_fraction=0.70):
     x_all = torch.cat(x_parts, dim=0)
     return x_all[torch.randperm(n_points, device=device)]
 
+
+def sample_interface_t(n_points, device, focus_fraction=0.65):
+    """Bias interface samples toward the potential-turning and theta=0 windows."""
+    n_focus = int(n_points * focus_fraction)
+    n_uniform = n_points - n_focus
+
+    if n_focus > 0:
+        centers = torch.tensor(
+            [0.25 * T_sim, T_switch * T_sim, 0.75 * T_sim],
+            dtype=torch.float32,
+            device=device,
+        )
+        center_idx = torch.randint(0, len(centers), (n_focus, 1), device=device)
+        t_focus = centers[center_idx] + 0.055 * T_sim * torch.randn(n_focus, 1, device=device)
+        t_focus = torch.clamp(t_focus, 0.0, T_sim)
+    else:
+        t_focus = torch.empty(0, 1, device=device)
+
+    if n_uniform > 0:
+        t_uniform = torch.rand(n_uniform, 1, device=device) * T_sim
+        t_all = torch.cat([t_focus, t_uniform], dim=0)
+    else:
+        t_all = t_focus
+    return t_all[torch.randperm(n_points, device=device)]
+
 # ==================== 网络架构（与 v9.5 相同）====================
 class ThinLayerNet_v9_6(nn.Module):
     def __init__(self, normalize_inputs=True):
@@ -387,6 +412,21 @@ def load_model_v96(model_thin, model_ext, optimizer, scheduler, path):
     return 0, {}, float('inf')
 
 
+def normalize_loss_history(loss_history):
+    if not loss_history:
+        return loss_history
+
+    total_len = len(loss_history.get('total', []))
+    for key in ('interface_thin', 'interface_ext'):
+        values = list(loss_history.get(key, []))
+        if len(values) < total_len:
+            values = [float('nan')] * (total_len - len(values)) + values
+        elif len(values) > total_len:
+            values = values[-total_len:]
+        loss_history[key] = values
+    return loss_history
+
+
 # ==================== 物理验证工具函数 ====================
 def verify_interface_physics(model_thin, model_ext, device, n_test=50):
     model_thin.eval()
@@ -541,7 +581,8 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
 # ==================== v9.6 训练函数 - 界面耦合增强 ====================
 def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resume=False,
                      early_stop=True, resume_checkpoint=None, resume_best=False,
-                     save_every=2000):
+                     save_every=2000, thin_interface_weight=None, ext_interface_weight=200.0,
+                     reset_best_score=False):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     model_thin.to(device)
@@ -553,9 +594,14 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=n_epochs, eta_min=1e-7)
 
+    is_hardbc = isinstance(model_thin, ThinLayerNet_v9_6_MultiscaleHardBC)
+    if thin_interface_weight is None:
+        thin_interface_weight = 800.0 if is_hardbc else 200.0
+
     loss_history = {
         'total': [], 'pde_thin': [], 'pde_ext': [], 'surface': [],
-        'farfield': [], 'initial': [], 'interface': [], 'lr': [],
+        'farfield': [], 'initial': [], 'interface': [],
+        'interface_thin': [], 'interface_ext': [], 'lr': [],
         'nernst_err': [], 'surface_state': [], 'physics_score': []
     }
 
@@ -588,8 +634,12 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             model_thin, model_ext, optimizer, scheduler, loaded_path
         )
         if loaded_history:
-            loss_history.update(loaded_history)
-        if loaded_best is not None:
+            loss_history.update(normalize_loss_history(loaded_history))
+        if reset_best_score:
+            best_score = float('inf')
+            best_epoch = start_epoch
+            print("Best score reset because the active loss weights may differ from the checkpoint.")
+        elif loaded_best is not None:
             best_score = loaded_best
             best_epoch = start_epoch
         print(f"Resumed from {loaded_path} at epoch {start_epoch}")
@@ -602,9 +652,10 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     print(f"Save every:         {save_every} epochs")
     print(f"Key changes:")
     print(f"  1. Interface weight: 50 → 200 (4x increase)")
-    print(f"  2. Interface sampling: n_points/2 → max(8000, n_points)")
+    print(f"  2. Interface sampling: focused T windows plus higher hardbc point count")
     print(f"  3. Farfield sampling: n_points/10 → n_points/5")
     print(f"  4. Flux sign: UNCHANGED (analysis shows equivalent to FDM)")
+    print(f"  5. Thin/external interface weights: {thin_interface_weight:.1f}/{ext_interface_weight:.1f}")
     print(f"{'='*80}")
 
     for epoch in range(start_epoch, start_epoch + n_epochs):
@@ -613,7 +664,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
 
         n_points = min(8000 + (epoch - start_epoch) // 10 * 40, 15000)
         n_surface = max(5000, n_points)
-        n_interface = max(8000, n_points)  # v9.6: 大幅增加界面采样
+        n_interface = max(12000, int(1.25 * n_points)) if is_hardbc else max(8000, n_points)
         n_farfield = n_points // 5  # v9.6: 增加远场采样
 
         # ========== 1. Interior region sampling ==========
@@ -732,7 +783,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
 
         # 3.6 Interface coupling - v9.6: 保持 v9.5 符号不变
         # 经分析，v9.5 的符号与 FDM 等价，只是定义不同
-        T_int = torch.rand(n_interface, 1, device=device) * T_sim
+        T_int = sample_interface_t(n_interface, device)
 
         X_int_thin = torch.ones_like(T_int) * delta
         X_int_thin.requires_grad_(True)
@@ -756,10 +807,9 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         flux_C_res = -D_rel_C * C_C_X_int + J_rxn
         flux_D_res = -D_rel_D * C_D_X_int - J_rxn
 
-        loss_interface = (torch.mean(flux_A_res**2) + 
-                         torch.mean(flux_B_res**2) + 
-                         torch.mean(flux_C_res**2) + 
-                         torch.mean(flux_D_res**2))
+        loss_interface_thin = torch.mean(flux_A_res**2) + torch.mean(flux_B_res**2)
+        loss_interface_ext = torch.mean(flux_C_res**2) + torch.mean(flux_D_res**2)
+        loss_interface = loss_interface_thin + loss_interface_ext
 
         # ========== 4. Weight adjustment ==========
         if epoch < start_epoch + 3000:
@@ -776,7 +826,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             'surface': surface_weight,
             'farfield': 1.0,
             'initial': 1.0,
-            'interface': 200.0,  # v9.6: 从 50 增加到 200
+            'interface_thin': thin_interface_weight,
+            'interface_ext': ext_interface_weight,
         }
 
         # 3.7 Total loss
@@ -786,7 +837,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             base_weights['surface'] * loss_surface +
             base_weights['farfield'] * loss_farfield +
             base_weights['initial'] * loss_initial +
-            base_weights['interface'] * loss_interface
+            base_weights['interface_thin'] * loss_interface_thin +
+            base_weights['interface_ext'] * loss_interface_ext
         )
         physics_score = (
             10.0 * loss_pde_thin +
@@ -794,7 +846,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             100.0 * loss_surface +
             loss_farfield +
             loss_initial +
-            200.0 * loss_interface
+            thin_interface_weight * loss_interface_thin +
+            ext_interface_weight * loss_interface_ext
         )
 
         # ========== 5. Optimization ==========
@@ -814,6 +867,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         loss_history['farfield'].append(loss_farfield.item())
         loss_history['initial'].append(loss_initial.item())
         loss_history['interface'].append(loss_interface.item())
+        loss_history.setdefault('interface_thin', []).append(loss_interface_thin.item())
+        loss_history.setdefault('interface_ext', []).append(loss_interface_ext.item())
         loss_history['lr'].append(optimizer.param_groups[0]['lr'])
         loss_history['nernst_err'].append(nernst_err)
         loss_history['surface_state'].append(loss_surface_state.item())
@@ -873,7 +928,11 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             print(f"  PDE_thin: {loss_pde_thin.item():.4e} | PDE_ext: {loss_pde_ext.item():.4e}")
             print(f"  Surface: {loss_surface.item():.4e} (w={base_weights['surface']:.2f})")
             print(f"  Surface state: {loss_surface_state.item():.4e}")
-            print(f"  Interface: {loss_interface.item():.4e} (w={base_weights['interface']:.1f})")
+            print(
+                f"  Interface: {loss_interface.item():.4e} "
+                f"(thin={loss_interface_thin.item():.4e}, ext={loss_interface_ext.item():.4e}; "
+                f"w={base_weights['interface_thin']:.1f}/{base_weights['interface_ext']:.1f})"
+            )
             print(f"  Hard: A+B={err_AB:.2e}, C+D={err_CD:.2e}")
             print(f"  Nernst={nernst_err_test:.2e} | J_rxn={J_rxn_test:.4e}")
             print(f"  C_B(δ)={C_B_int_test.mean().item():.4f}, C_C(δ)={C_C_int_test.mean().item():.4f}")
@@ -968,6 +1027,10 @@ def predict_and_visualize_v9_6(model_thin, model_ext, loss_history, gamma, n_cv=
     ax2.semilogy(epochs, loss_history['pde_ext'], 'r-', alpha=0.7, label='PDE_ext')
     ax2.semilogy(epochs, loss_history['surface'], 'g-', alpha=0.7, label='Surface')
     ax2.semilogy(epochs, loss_history['interface'], 'm-', alpha=0.7, label='Interface')
+    if len(loss_history.get('interface_thin', [])) == len(loss_history['total']):
+        ax2.semilogy(epochs, loss_history['interface_thin'], color='#7B3294', alpha=0.6, label='Interface thin')
+    if len(loss_history.get('interface_ext', [])) == len(loss_history['total']):
+        ax2.semilogy(epochs, loss_history['interface_ext'], color='#008837', alpha=0.6, label='Interface ext')
     ax2.set_xlabel('Epoch')
     ax2.set_ylabel('Loss')
     ax2.set_title('Loss Components')
@@ -1243,6 +1306,12 @@ if __name__ == "__main__":
     parser.add_argument("--cv-points", type=int, default=8000)
     parser.add_argument("--fdm-csv", default="../FDM/v41_cv_data_fixed.csv")
     parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc"], default="legacy")
+    parser.add_argument("--thin-interface-weight", type=float, default=None,
+                        help="Weight for thin-layer interface flux residual. Default: 800 for hardbc, 200 otherwise.")
+    parser.add_argument("--ext-interface-weight", type=float, default=200.0,
+                        help="Weight for external-region interface flux residual.")
+    parser.add_argument("--reset-best-score", action="store_true",
+                        help="Ignore checkpoint best score when resuming after changing loss weights.")
     parser.add_argument("--no-early-stop", action="store_true",
                         help="Disable early stopping and run exactly --epochs epochs.")
     args = parser.parse_args()
@@ -1274,12 +1343,14 @@ if __name__ == "__main__":
         loaded_epoch, loss_history, _ = load_model_v96(
             model_thin, model_ext, optimizer, scheduler, args.checkpoint
         )
+        loss_history = normalize_loss_history(loss_history)
         if loaded_epoch == 0 and not os.path.exists(args.checkpoint):
             raise FileNotFoundError(args.checkpoint)
         if not loss_history:
             loss_history = {
                 'total': [], 'pde_thin': [], 'pde_ext': [], 'surface': [],
-                'farfield': [], 'initial': [], 'interface': [], 'lr': [],
+                'farfield': [], 'initial': [], 'interface': [],
+                'interface_thin': [], 'interface_ext': [], 'lr': [],
                 'nernst_err': [], 'surface_state': [], 'physics_score': []
             }
         print(f"\nEvaluating checkpoint: {args.checkpoint}")
@@ -1334,7 +1405,10 @@ if __name__ == "__main__":
         early_stop=not args.no_early_stop,
         resume_checkpoint=args.resume_checkpoint,
         resume_best=args.resume_best,
-        save_every=args.save_every
+        save_every=args.save_every,
+        thin_interface_weight=args.thin_interface_weight,
+        ext_interface_weight=args.ext_interface_weight,
+        reset_best_score=args.reset_best_score
     )
 
     # 可视化
