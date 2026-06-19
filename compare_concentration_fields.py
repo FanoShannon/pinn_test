@@ -30,6 +30,9 @@ def build_models(arch, normalize_inputs, device):
     elif arch == "multiscale_hardbc":
         model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHardBC(normalize_inputs=normalize_inputs)
         model_ext = pinn.ExternalNet_v9_6_Multiscale(pinn.gamma, normalize_inputs=normalize_inputs)
+    elif arch == "multiscale_hermite":
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(normalize_inputs=normalize_inputs)
+        model_ext = pinn.ExternalNet_v9_6_Multiscale(pinn.gamma, normalize_inputs=normalize_inputs)
     else:
         raise ValueError(f"Unknown architecture: {arch}")
     return model_thin.to(device), model_ext.to(device)
@@ -235,7 +238,7 @@ def main():
     )
     parser.add_argument("--fdm-pkl", default="../FDM/thin_layer_catalytic_v41_fixed.pkl")
     parser.add_argument("--checkpoint", default="./pinn_thin_layer_catalytic_v9_6_best.pth")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "multiscale_hermite"], default="legacy")
     parser.add_argument("--input-mode", choices=["legacy", "normalized"], default="legacy")
     parser.add_argument("--n-time", type=int, default=160)
     parser.add_argument("--n-x-in", type=int, default=120)

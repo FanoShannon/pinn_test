@@ -72,6 +72,8 @@ MODEL_V96_MULTISCALE_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale.pth'
 MODEL_V96_MULTISCALE_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_best.pth'
 MODEL_V96_MULTISCALE_HARDBC_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_hardbc.pth'
 MODEL_V96_MULTISCALE_HARDBC_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_hardbc_best.pth'
+MODEL_V96_MULTISCALE_HERMITE_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_hermite.pth'
+MODEL_V96_MULTISCALE_HERMITE_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_hermite_best.pth'
 
 USE_NORMALIZED_COORDS = True
 
@@ -83,6 +85,9 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     elif arch == "multiscale_hardbc":
         current_path = MODEL_V96_MULTISCALE_HARDBC_PATH
         best_path = MODEL_V96_MULTISCALE_HARDBC_BEST_PATH
+    elif arch == "multiscale_hermite":
+        current_path = MODEL_V96_MULTISCALE_HERMITE_PATH
+        best_path = MODEL_V96_MULTISCALE_HERMITE_BEST_PATH
     else:
         current_path = './pinn_thin_layer_catalytic_v9_6.pth'
         best_path = './pinn_thin_layer_catalytic_v9_6_best.pth'
@@ -239,9 +244,9 @@ class ResidualMLPBlock(nn.Module):
 
 
 class MultiscaleResidualHead(nn.Module):
-    def __init__(self, out_features, width=256, depth=5):
+    def __init__(self, out_features, width=256, depth=5, in_features=2):
         super().__init__()
-        self.features = FourierFeatureLayer()
+        self.features = FourierFeatureLayer(in_features=in_features)
         layers = [nn.Linear(self.features.out_features, width), nn.Tanh()]
         for _ in range(depth):
             layers.append(ResidualMLPBlock(width))
@@ -303,6 +308,73 @@ class ThinLayerNet_v9_6_MultiscaleHardBC(nn.Module):
         return C_A, C_B
 
 
+class ThinLayerNet_v9_6_MultiscaleHermite(nn.Module):
+    def __init__(self, normalize_inputs=True):
+        super().__init__()
+        self.normalize_inputs = normalize_inputs
+        # Keep this name/shape compatible with MultiscaleHardBC so old checkpoints
+        # can seed the correction network when strict=False loading is used.
+        self.net = MultiscaleResidualHead(out_features=2, width=256, depth=5)
+        self.state_net = MultiscaleResidualHead(out_features=3, width=128, depth=3, in_features=1)
+        self.correction_scale = 1.5
+        self.surface_bubble_scale = 0.25
+        self.surface_slope_scale = 6.0
+        self.interface_flux_scale = 6.0
+
+    def forward(self, x_input):
+        T_raw = x_input[:, 0:1]
+        X_raw = x_input[:, 1:2]
+        if self.normalize_inputs:
+            x_net = torch.cat([
+                normalize_time(T_raw),
+                normalize_thin_x(X_raw)
+            ], dim=1)
+            t_net = normalize_time(T_raw)
+        else:
+            x_net = x_input
+            t_net = T_raw
+
+        theta = potential_theta(T_raw)
+        c_b_surface = torch.sigmoid(-theta)
+        time_gate = 1.0 - torch.exp(-torch.clamp(T_raw, min=0.0) / (0.05 * T_sim))
+
+        state_raw = self.state_net(t_net)
+        c_b_prior_logit = torch.logit(torch.clamp(c_b_surface, 1e-6, 1.0 - 1e-6))
+        c_b_int = time_gate * torch.sigmoid(0.25 * state_raw[:, 0:1] + c_b_prior_logit)
+
+        j_prior = torch.clamp((6.5 * c_b_int) / self.interface_flux_scale, 1e-5, 1.0 - 1e-5)
+        j_prior_logit = torch.logit(j_prior)
+        j_hat = self.interface_flux_scale * torch.sigmoid(j_prior_logit + state_raw[:, 1:2])
+        surface_slope = self.surface_slope_scale * time_gate * torch.tanh(state_raw[:, 2:3])
+        interface_slope = -j_hat / D_rel_B
+
+        s = torch.clamp(X_raw / delta, 0.0, 1.0)
+        s2 = s * s
+        s3 = s2 * s
+        h00 = 2.0 * s3 - 3.0 * s2 + 1.0
+        h10 = s3 - 2.0 * s2 + s
+        h01 = -2.0 * s3 + 3.0 * s2
+        h11 = s3 - s2
+
+        c_b_base = (
+            h00 * c_b_surface +
+            h10 * delta * surface_slope +
+            h01 * c_b_int +
+            h11 * delta * interface_slope
+        )
+
+        raw_field = self.net(x_net)
+        endpoint_bubble = s2 * (1.0 - s) ** 2
+        surface_bubble = s * (1.0 - s) ** 2
+        correction = time_gate * (
+            self.surface_bubble_scale * surface_bubble * torch.tanh(raw_field[:, 1:2]) +
+            self.correction_scale * endpoint_bubble * torch.tanh(raw_field[:, 0:1])
+        )
+        C_B = c_b_base + correction
+        C_A = 1.0 - C_B
+        return C_A, C_B
+
+
 class ExternalNet_v9_6_Multiscale(nn.Module):
     def __init__(self, gamma_val, normalize_inputs=True):
         super().__init__()
@@ -340,6 +412,11 @@ def create_models_v96(arch="legacy", normalize_inputs=True):
     if arch == "multiscale_hardbc":
         return (
             ThinLayerNet_v9_6_MultiscaleHardBC(normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6_Multiscale(gamma, normalize_inputs=normalize_inputs),
+        )
+    if arch == "multiscale_hermite":
+        return (
+            ThinLayerNet_v9_6_MultiscaleHermite(normalize_inputs=normalize_inputs),
             ExternalNet_v9_6_Multiscale(gamma, normalize_inputs=normalize_inputs),
         )
     raise ValueError(f"Unknown architecture: {arch}")
@@ -388,11 +465,17 @@ def load_model_v96(model_thin, model_ext, optimizer, scheduler, path):
     if os.path.exists(path):
         checkpoint = torch.load(path, map_location='cpu', weights_only=False)
         model_thin.load_state_dict(checkpoint['model_thin_state_dict'], strict=False)
-        model_ext.load_state_dict(checkpoint['model_ext_state_dict'])
+        model_ext.load_state_dict(checkpoint['model_ext_state_dict'], strict=False)
         if optimizer and checkpoint.get('optimizer_state_dict') is not None:
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            try:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            except ValueError as exc:
+                print(f"Optimizer state skipped: {exc}")
         if scheduler and checkpoint.get('scheduler_state_dict') is not None:
-            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            try:
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            except Exception as exc:
+                print(f"Scheduler state skipped: {exc}")
 
         rng_state = checkpoint.get('rng_state')
         if rng_state:
@@ -594,9 +677,10 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=n_epochs, eta_min=1e-7)
 
-    is_hardbc = isinstance(model_thin, ThinLayerNet_v9_6_MultiscaleHardBC)
+    is_hermite = isinstance(model_thin, ThinLayerNet_v9_6_MultiscaleHermite)
+    is_hardbc = isinstance(model_thin, (ThinLayerNet_v9_6_MultiscaleHardBC, ThinLayerNet_v9_6_MultiscaleHermite))
     if thin_interface_weight is None:
-        thin_interface_weight = 800.0 if is_hardbc else 200.0
+        thin_interface_weight = 300.0 if is_hermite else (800.0 if is_hardbc else 200.0)
 
     loss_history = {
         'total': [], 'pde_thin': [], 'pde_ext': [], 'surface': [],
@@ -1305,9 +1389,9 @@ if __name__ == "__main__":
                         help="Use raw coordinates for old v9.6 checkpoints.")
     parser.add_argument("--cv-points", type=int, default=8000)
     parser.add_argument("--fdm-csv", default="../FDM/v41_cv_data_fixed.csv")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "multiscale_hermite"], default="legacy")
     parser.add_argument("--thin-interface-weight", type=float, default=None,
-                        help="Weight for thin-layer interface flux residual. Default: 800 for hardbc, 200 otherwise.")
+                        help="Weight for thin-layer interface flux residual. Default: 300 for hermite, 800 for hardbc, 200 otherwise.")
     parser.add_argument("--ext-interface-weight", type=float, default=200.0,
                         help="Weight for external-region interface flux residual.")
     parser.add_argument("--reset-best-score", action="store_true",
