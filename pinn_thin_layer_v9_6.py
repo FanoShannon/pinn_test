@@ -70,6 +70,8 @@ MODEL_V96_PATH = './pinn_thin_layer_catalytic_v9_6.pth'
 MODEL_V96_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_best.pth'
 MODEL_V96_MULTISCALE_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale.pth'
 MODEL_V96_MULTISCALE_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_best.pth'
+MODEL_V96_MULTISCALE_HARDBC_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_hardbc.pth'
+MODEL_V96_MULTISCALE_HARDBC_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_hardbc_best.pth'
 
 USE_NORMALIZED_COORDS = True
 
@@ -78,6 +80,9 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     if arch == "multiscale":
         current_path = MODEL_V96_MULTISCALE_PATH
         best_path = MODEL_V96_MULTISCALE_BEST_PATH
+    elif arch == "multiscale_hardbc":
+        current_path = MODEL_V96_MULTISCALE_HARDBC_PATH
+        best_path = MODEL_V96_MULTISCALE_HARDBC_BEST_PATH
     else:
         current_path = './pinn_thin_layer_catalytic_v9_6.pth'
         best_path = './pinn_thin_layer_catalytic_v9_6_best.pth'
@@ -112,6 +117,21 @@ def sample_external_x(n_points, device, near_fraction=0.75):
         x_all = torch.cat([x_near, x_uniform], dim=0)
         return x_all[torch.randperm(n_points, device=device)]
     return x_near
+
+
+def sample_thin_x(n_points, device, boundary_fraction=0.70):
+    n_boundary = int(n_points * boundary_fraction)
+    n_surface = n_boundary // 2
+    n_interface = n_boundary - n_surface
+    n_uniform = n_points - n_boundary
+
+    x_surface = delta * torch.rand(n_surface, 1, device=device) ** 2
+    x_interface = delta * (1.0 - torch.rand(n_interface, 1, device=device) ** 2)
+    x_parts = [x_surface, x_interface]
+    if n_uniform > 0:
+        x_parts.append(torch.rand(n_uniform, 1, device=device) * delta)
+    x_all = torch.cat(x_parts, dim=0)
+    return x_all[torch.randperm(n_points, device=device)]
 
 # ==================== 网络架构（与 v9.5 相同）====================
 class ThinLayerNet_v9_6(nn.Module):
@@ -226,6 +246,32 @@ class ThinLayerNet_v9_6_Multiscale(nn.Module):
         return C_A, C_B
 
 
+class ThinLayerNet_v9_6_MultiscaleHardBC(nn.Module):
+    def __init__(self, normalize_inputs=True):
+        super().__init__()
+        self.normalize_inputs = normalize_inputs
+        self.net = MultiscaleResidualHead(out_features=2, width=256, depth=5)
+
+    def forward(self, x_input):
+        T_raw = x_input[:, 0:1]
+        X_raw = x_input[:, 1:2]
+        if self.normalize_inputs:
+            x_net = torch.cat([
+                normalize_time(T_raw),
+                normalize_thin_x(X_raw)
+            ], dim=1)
+        else:
+            x_net = x_input
+
+        raw = self.net(x_net)
+        c_b_free = F.softmax(raw, dim=1)[:, 1:2]
+        c_b_surface = torch.sigmoid(-potential_theta(T_raw))
+        x_gate = torch.clamp(X_raw / delta, 0.0, 1.0)
+        C_B = (1.0 - x_gate) * c_b_surface + x_gate * c_b_free
+        C_A = 1.0 - C_B
+        return C_A, C_B
+
+
 class ExternalNet_v9_6_Multiscale(nn.Module):
     def __init__(self, gamma_val, normalize_inputs=True):
         super().__init__()
@@ -258,6 +304,11 @@ def create_models_v96(arch="legacy", normalize_inputs=True):
     if arch == "multiscale":
         return (
             ThinLayerNet_v9_6_Multiscale(normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6_Multiscale(gamma, normalize_inputs=normalize_inputs),
+        )
+    if arch == "multiscale_hardbc":
+        return (
+            ThinLayerNet_v9_6_MultiscaleHardBC(normalize_inputs=normalize_inputs),
             ExternalNet_v9_6_Multiscale(gamma, normalize_inputs=normalize_inputs),
         )
     raise ValueError(f"Unknown architecture: {arch}")
@@ -405,6 +456,16 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
         theta = potential_theta(T_test)
         nernst_err = torch.sqrt(torch.mean((C_A - C_B * torch.exp(theta))**2)).item()
         nernst_max_err = torch.max(torch.abs(C_A - C_B * torch.exp(theta))).item()
+        C_A_eq = torch.sigmoid(theta)
+        C_B_eq = torch.sigmoid(-theta)
+        surface_state_err = torch.sqrt(torch.mean((C_A - C_A_eq)**2 + (C_B - C_B_eq)**2)).item()
+
+        X_int = torch.ones_like(T_test) * delta
+        _, C_B_int = model_thin(torch.cat([T_test, X_int], dim=1))
+        C_C_int, _ = model_ext(torch.cat([T_test, X_int], dim=1))
+        J_rxn_mean = torch.mean(k_cat_star * C_B_int * C_C_int).item()
+        C_B_int_mean = torch.mean(C_B_int).item()
+        C_C_int_mean = torch.mean(C_C_int).item()
 
         # 2. 薄层守恒
         T_cons = torch.tensor([0.0, 0.25, 0.5, 0.75, 1.0], device=device) * T_sim
@@ -450,6 +511,8 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
         print(f"{'='*60}")
         print(f"Nernst RMSE: {nernst_err:.4e}")
         print(f"Nernst Max:  {nernst_max_err:.4e}")
+        print(f"Surface state RMSE: {surface_state_err:.4e}")
+        print(f"Interface means: C_B={C_B_int_mean:.4e}, C_C={C_C_int_mean:.4e}, J_rxn={J_rxn_mean:.4e}")
         print(f"Peak Current: {J_peak:.4f} @ θ={theta_peak:.2f}")
         print(f"Conservation A+B: {err_AB_max:.2e}")
         print(f"Conservation C+D: {err_CD_max:.2e}")
@@ -458,6 +521,10 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
     return {
         'nernst_err': nernst_err,
         'nernst_max_err': nernst_max_err,
+        'surface_state_err': surface_state_err,
+        'C_B_int_mean': C_B_int_mean,
+        'C_C_int_mean': C_C_int_mean,
+        'J_rxn_mean': J_rxn_mean,
         'J_peak': J_peak,
         'theta_peak': theta_peak,
         'err_AB': err_AB_max,
@@ -483,10 +550,10 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     loss_history = {
         'total': [], 'pde_thin': [], 'pde_ext': [], 'surface': [],
         'farfield': [], 'initial': [], 'interface': [], 'lr': [],
-        'nernst_err': []
+        'nernst_err': [], 'surface_state': []
     }
 
-    best_nernst = float('inf')
+    best_score = float('inf')
     best_epoch = 0
     patience = 5000
     no_improve = 0
@@ -517,7 +584,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         if loaded_history:
             loss_history.update(loaded_history)
         if loaded_best is not None:
-            best_nernst = loaded_best
+            best_score = loaded_best
             best_epoch = start_epoch
         print(f"Resumed from {loaded_path} at epoch {start_epoch}")
 
@@ -545,7 +612,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
 
         # ========== 1. Interior region sampling ==========
         T_thin = torch.rand(n_points, 1, device=device) * T_sim
-        X_thin = torch.rand(n_points, 1, device=device) * delta
+        X_thin = sample_thin_x(n_points, device)
         T_thin.requires_grad_(True)
         X_thin.requires_grad_(True)
 
@@ -603,8 +670,9 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         char_length = delta * 0.005
         dist_weight = torch.exp(-X_surf / char_length)
 
-        loss_nernst_l2 = torch.mean(dist_weight * nernst_residual**2)
-        loss_nernst_l1 = torch.mean(dist_weight * torch.abs(nernst_residual))
+        dist_norm = torch.sum(dist_weight) + 1e-12
+        loss_nernst_l2 = torch.sum(dist_weight * nernst_residual**2) / dist_norm
+        loss_nernst_l1 = torch.sum(dist_weight * torch.abs(nernst_residual)) / dist_norm
         loss_nernst_max = torch.max(dist_weight * torch.abs(nernst_residual))
 
         T_exact = torch.rand(n_surface // 3, 1, device=device) * T_sim
@@ -612,6 +680,9 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         inputs_exact = torch.cat([T_exact, X_exact], dim=1)
         C_A_exact, C_B_exact = model_thin(inputs_exact)
         theta_exact = potential_theta(T_exact)
+        C_A_eq = torch.sigmoid(theta_exact)
+        C_B_eq = torch.sigmoid(-theta_exact)
+        loss_surface_state = torch.mean((C_A_exact - C_A_eq)**2 + (C_B_exact - C_B_eq)**2)
 
         strong_red = (theta_exact < -6).float()
         loss_red = torch.mean(strong_red * C_A_exact**2)
@@ -622,7 +693,9 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         near_zero = (torch.abs(theta_exact) < 0.3).float()
         loss_zero = torch.mean(near_zero * (C_A_exact - 0.5)**2)
 
-        loss_surface = loss_nernst_l2 + 2.0 * loss_nernst_l1 + 0.1 * loss_nernst_max +                        0.5 * (loss_red + loss_ox) + loss_zero
+        loss_surface = (loss_nernst_l2 + 2.0 * loss_nernst_l1 + 0.1 * loss_nernst_max +
+                        5.0 * loss_surface_state +
+                        0.5 * (loss_red + loss_ox) + loss_zero)
 
         # 3.4 Far-field
         T_far = torch.rand(n_farfield, 1, device=device) * T_sim
@@ -729,27 +802,29 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         loss_history['interface'].append(loss_interface.item())
         loss_history['lr'].append(optimizer.param_groups[0]['lr'])
         loss_history['nernst_err'].append(nernst_err)
+        loss_history['surface_state'].append(loss_surface_state.item())
 
         # ========== 7. Validation & Early stopping ==========
         if epoch % 500 == 0:
             val_results = validate_model(model_thin, model_ext, device, epoch, verbose=True)
+            save_score = total_loss.item()
 
-            if val_results['nernst_err'] < best_nernst:
-                best_nernst = val_results['nernst_err']
+            if save_score < best_score:
+                best_score = save_score
                 best_epoch = epoch
                 no_improve = 0
                 best_val_results = val_results
                 save_model_v96(model_thin, model_ext, optimizer, scheduler,
                              epoch, MODEL_V96_BEST_PATH,
-                             loss_history=loss_history, best_val_loss=best_nernst)
-                print(f"  ✓ New best model saved (Nernst: {best_nernst:.4e})")
+                             loss_history=loss_history, best_val_loss=best_score)
+                print(f"  ✓ New best model saved (physics score: {best_score:.4e})")
             else:
                 no_improve += 500
 
             if early_stop and no_improve > patience and epoch > start_epoch + 8000:
                 print(f"\n{'='*60}")
                 print(f"Early stopping at epoch {epoch}")
-                print(f"Best Nernst error: {best_nernst:.4e} at epoch {best_epoch}")
+                print(f"Best physics score: {best_score:.4e} at epoch {best_epoch}")
                 print(f"{'='*60}")
                 break
 
@@ -781,11 +856,12 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             print(f"\nEpoch {epoch:5d} | Total: {total_loss.item():.4e}")
             print(f"  PDE_thin: {loss_pde_thin.item():.4e} | PDE_ext: {loss_pde_ext.item():.4e}")
             print(f"  Surface: {loss_surface.item():.4e} (w={base_weights['surface']:.2f})")
+            print(f"  Surface state: {loss_surface_state.item():.4e}")
             print(f"  Interface: {loss_interface.item():.4e} (w={base_weights['interface']:.1f})")
             print(f"  Hard: A+B={err_AB:.2e}, C+D={err_CD:.2e}")
             print(f"  Nernst={nernst_err_test:.2e} | J_rxn={J_rxn_test:.4e}")
             print(f"  C_B(δ)={C_B_int_test.mean().item():.4f}, C_C(δ)={C_C_int_test.mean().item():.4f}")
-            print(f"  Best Nernst: {best_nernst:.2e} @ {best_epoch}")
+            print(f"  Best physics score: {best_score:.2e} @ {best_epoch}")
             print(f"  LR: {optimizer.param_groups[0]['lr']:.2e}")
 
             if epoch % 2000 == 0 and epoch > start_epoch:
@@ -795,12 +871,12 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         if save_every > 0 and (epoch + 1) % save_every == 0:
             save_model_v96(model_thin, model_ext, optimizer, scheduler,
                          epoch + 1, MODEL_V96_PATH,
-                         loss_history=loss_history, best_val_loss=best_nernst)
+                         loss_history=loss_history, best_val_loss=best_score)
 
     # Final save
     save_model_v96(model_thin, model_ext, optimizer, scheduler,
                  epoch + 1, MODEL_V96_PATH,
-                 loss_history=loss_history, best_val_loss=best_nernst)
+                 loss_history=loss_history, best_val_loss=best_score)
 
     # Final validation
     print(f"\n{'='*80}")
@@ -1150,7 +1226,7 @@ if __name__ == "__main__":
                         help="Use raw coordinates for old v9.6 checkpoints.")
     parser.add_argument("--cv-points", type=int, default=8000)
     parser.add_argument("--fdm-csv", default="../FDM/v41_cv_data_fixed.csv")
-    parser.add_argument("--arch", choices=["legacy", "multiscale"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc"], default="legacy")
     parser.add_argument("--no-early-stop", action="store_true",
                         help="Disable early stopping and run exactly --epochs epochs.")
     args = parser.parse_args()
@@ -1188,7 +1264,7 @@ if __name__ == "__main__":
             loss_history = {
                 'total': [], 'pde_thin': [], 'pde_ext': [], 'surface': [],
                 'farfield': [], 'initial': [], 'interface': [], 'lr': [],
-                'nernst_err': []
+                'nernst_err': [], 'surface_state': []
             }
         print(f"\nEvaluating checkpoint: {args.checkpoint}")
         validate_model(model_thin, model_ext, device, loaded_epoch, verbose=True)

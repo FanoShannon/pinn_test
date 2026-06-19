@@ -27,6 +27,9 @@ def build_models(arch, normalize_inputs, device):
     elif arch == "multiscale":
         model_thin = pinn.ThinLayerNet_v9_6_Multiscale(normalize_inputs=normalize_inputs)
         model_ext = pinn.ExternalNet_v9_6_Multiscale(pinn.gamma, normalize_inputs=normalize_inputs)
+    elif arch == "multiscale_hardbc":
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHardBC(normalize_inputs=normalize_inputs)
+        model_ext = pinn.ExternalNet_v9_6_Multiscale(pinn.gamma, normalize_inputs=normalize_inputs)
     else:
         raise ValueError(f"Unknown architecture: {arch}")
     return model_thin.to(device), model_ext.to(device)
@@ -157,12 +160,13 @@ def compare(args):
     print(f"Architecture: {args.arch}")
     print(f"Input mode: {args.input_mode}")
     print(f"Device: {device}")
-    print("field,rmse,mae,max_abs,bias,r2,fdm_min,fdm_max,pinn_min,pinn_max")
+    print("field,rmse,mae,max_abs,bias,r2,nrmse,fdm_min,fdm_max,pinn_min,pinn_max")
     for name in ["C_A", "C_B", "C_C", "C_D", "C_B_int", "C_C_int"]:
         row = metrics[name]
         print(
             f"{name},{row['rmse']:.8e},{row['mae']:.8e},{row['max_abs']:.8e},"
-            f"{row['bias']:.8e},{row['r2']:.8e},{row['fdm_min']:.8e},{row['fdm_max']:.8e},"
+            f"{row['bias']:.8e},{row['r2']:.8e},{row['nrmse']:.8e},"
+            f"{row['fdm_min']:.8e},{row['fdm_max']:.8e},"
             f"{row['pinn_min']:.8e},{row['pinn_max']:.8e}"
         )
     print(f"overall_rmse,{metrics['overall']['rmse']:.8e}")
@@ -231,7 +235,7 @@ def main():
     )
     parser.add_argument("--fdm-pkl", default="../FDM/thin_layer_catalytic_v41_fixed.pkl")
     parser.add_argument("--checkpoint", default="./pinn_thin_layer_catalytic_v9_6_best.pth")
-    parser.add_argument("--arch", choices=["legacy", "multiscale"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc"], default="legacy")
     parser.add_argument("--input-mode", choices=["legacy", "normalized"], default="legacy")
     parser.add_argument("--n-time", type=int, default=160)
     parser.add_argument("--n-x-in", type=int, default=120)
