@@ -31,8 +31,16 @@ def build_models(arch, normalize_inputs, device):
         model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHardBC(normalize_inputs=normalize_inputs)
         model_ext = pinn.ExternalNet_v9_6_Multiscale(pinn.gamma, normalize_inputs=normalize_inputs)
     elif arch == "multiscale_hermite":
-        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(normalize_inputs=normalize_inputs)
-        model_ext = pinn.ExternalNet_v9_6_Multiscale(pinn.gamma, normalize_inputs=normalize_inputs)
+        interface_state = pinn.InterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_MultiscaleHermite(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
     else:
         raise ValueError(f"Unknown architecture: {arch}")
     return model_thin.to(device), model_ext.to(device)

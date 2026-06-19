@@ -308,18 +308,49 @@ class ThinLayerNet_v9_6_MultiscaleHardBC(nn.Module):
         return C_A, C_B
 
 
-class ThinLayerNet_v9_6_MultiscaleHermite(nn.Module):
+class InterfaceStateNet_v9_6(nn.Module):
     def __init__(self, normalize_inputs=True):
         super().__init__()
+        self.normalize_inputs = normalize_inputs
+        self.net = MultiscaleResidualHead(out_features=3, width=192, depth=4, in_features=1)
+        self.c_c_depletion_scale = 4.0
+        self.surface_slope_scale = 6.0
+
+    def forward(self, T_raw):
+        if self.normalize_inputs:
+            t_net = normalize_time(T_raw)
+        else:
+            t_net = T_raw
+
+        theta = potential_theta(T_raw)
+        c_b_surface = torch.sigmoid(-theta)
+        time_gate = 1.0 - torch.exp(-torch.clamp(T_raw, min=0.0) / (0.05 * T_sim))
+
+        raw = self.net(t_net)
+        c_b_prior_logit = torch.logit(torch.clamp(c_b_surface, 1e-6, 1.0 - 1e-6))
+        C_B_int = time_gate * torch.sigmoid(c_b_prior_logit + raw[:, 0:1])
+        C_C_int = gamma - self.c_c_depletion_scale * time_gate * torch.sigmoid(raw[:, 1:2])
+        J_rxn = k_cat_star * C_B_int * C_C_int
+        surface_slope = self.surface_slope_scale * time_gate * torch.tanh(raw[:, 2:3])
+        return {
+            "C_B_surface": c_b_surface,
+            "C_B_int": C_B_int,
+            "C_C_int": C_C_int,
+            "J_rxn": J_rxn,
+            "surface_slope": surface_slope,
+        }
+
+
+class ThinLayerNet_v9_6_MultiscaleHermite(nn.Module):
+    def __init__(self, interface_state=None, normalize_inputs=True):
+        super().__init__()
+        self.interface_state = interface_state if interface_state is not None else InterfaceStateNet_v9_6(normalize_inputs)
         self.normalize_inputs = normalize_inputs
         # Keep this name/shape compatible with MultiscaleHardBC so old checkpoints
         # can seed the correction network when strict=False loading is used.
         self.net = MultiscaleResidualHead(out_features=2, width=256, depth=5)
-        self.state_net = MultiscaleResidualHead(out_features=3, width=128, depth=3, in_features=1)
         self.correction_scale = 1.5
         self.surface_bubble_scale = 0.25
-        self.surface_slope_scale = 6.0
-        self.interface_flux_scale = 6.0
 
     def forward(self, x_input):
         T_raw = x_input[:, 0:1]
@@ -329,24 +360,17 @@ class ThinLayerNet_v9_6_MultiscaleHermite(nn.Module):
                 normalize_time(T_raw),
                 normalize_thin_x(X_raw)
             ], dim=1)
-            t_net = normalize_time(T_raw)
         else:
             x_net = x_input
-            t_net = T_raw
 
-        theta = potential_theta(T_raw)
-        c_b_surface = torch.sigmoid(-theta)
+        state = self.interface_state(T_raw)
+        c_b_surface = state["C_B_surface"]
+        c_b_int = state["C_B_int"]
+        j_rxn = state["J_rxn"]
+        surface_slope = state["surface_slope"]
         time_gate = 1.0 - torch.exp(-torch.clamp(T_raw, min=0.0) / (0.05 * T_sim))
 
-        state_raw = self.state_net(t_net)
-        c_b_prior_logit = torch.logit(torch.clamp(c_b_surface, 1e-6, 1.0 - 1e-6))
-        c_b_int = time_gate * torch.sigmoid(0.25 * state_raw[:, 0:1] + c_b_prior_logit)
-
-        j_prior = torch.clamp((6.5 * c_b_int) / self.interface_flux_scale, 1e-5, 1.0 - 1e-5)
-        j_prior_logit = torch.logit(j_prior)
-        j_hat = self.interface_flux_scale * torch.sigmoid(j_prior_logit + state_raw[:, 1:2])
-        surface_slope = self.surface_slope_scale * time_gate * torch.tanh(state_raw[:, 2:3])
-        interface_slope = -j_hat / D_rel_B
+        interface_slope = -j_rxn / D_rel_B
 
         s = torch.clamp(X_raw / delta, 0.0, 1.0)
         s2 = s * s
@@ -398,6 +422,57 @@ class ExternalNet_v9_6_Multiscale(nn.Module):
         return C_C, C_D
 
 
+class ExternalNet_v9_6_MultiscaleHermite(nn.Module):
+    def __init__(self, gamma_val, interface_state=None, normalize_inputs=True):
+        super().__init__()
+        self.gamma = gamma_val
+        self.interface_state = interface_state if interface_state is not None else InterfaceStateNet_v9_6(normalize_inputs)
+        self.normalize_inputs = normalize_inputs
+        self.net = MultiscaleResidualHead(out_features=1, width=256, depth=5)
+        self.correction_scale = 2.0
+
+    def forward(self, x_input):
+        T_raw = x_input[:, 0:1]
+        X_raw = x_input[:, 1:2]
+        if self.normalize_inputs:
+            x_net = torch.cat([
+                normalize_time(T_raw),
+                normalize_ext_x(X_raw)
+            ], dim=1)
+        else:
+            x_net = x_input
+
+        state = self.interface_state(T_raw)
+        c_c_int = state["C_C_int"]
+        j_rxn = state["J_rxn"]
+        interface_slope = j_rxn / D_rel_C
+        far_slope = torch.zeros_like(interface_slope)
+        ext_length = X_ext_max - delta
+
+        r = torch.clamp((X_raw - delta) / ext_length, 0.0, 1.0)
+        r2 = r * r
+        r3 = r2 * r
+        h00 = 2.0 * r3 - 3.0 * r2 + 1.0
+        h10 = r3 - 2.0 * r2 + r
+        h01 = -2.0 * r3 + 3.0 * r2
+        h11 = r3 - r2
+
+        c_c_base = (
+            h00 * c_c_int +
+            h10 * ext_length * interface_slope +
+            h01 * self.gamma +
+            h11 * ext_length * far_slope
+        )
+
+        raw = self.net(x_net)
+        endpoint_bubble = r2 * (1.0 - r) ** 2
+        time_gate = torch.clamp(T_raw / T_sim, 0.0, 1.0)
+        correction = self.correction_scale * time_gate * endpoint_bubble * torch.tanh(raw)
+        C_C = c_c_base + correction
+        C_D = self.gamma - C_C
+        return C_C, C_D
+
+
 def create_models_v96(arch="legacy", normalize_inputs=True):
     if arch == "legacy":
         return (
@@ -415,9 +490,10 @@ def create_models_v96(arch="legacy", normalize_inputs=True):
             ExternalNet_v9_6_Multiscale(gamma, normalize_inputs=normalize_inputs),
         )
     if arch == "multiscale_hermite":
+        interface_state = InterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
         return (
-            ThinLayerNet_v9_6_MultiscaleHermite(normalize_inputs=normalize_inputs),
-            ExternalNet_v9_6_Multiscale(gamma, normalize_inputs=normalize_inputs),
+            ThinLayerNet_v9_6_MultiscaleHermite(interface_state=interface_state, normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6_MultiscaleHermite(gamma, interface_state=interface_state, normalize_inputs=normalize_inputs),
         )
     raise ValueError(f"Unknown architecture: {arch}")
 
@@ -671,7 +747,13 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     model_thin.to(device)
     model_ext.to(device)
 
-    params = list(model_thin.parameters()) + list(model_ext.parameters())
+    params = []
+    seen_params = set()
+    for module in (model_thin, model_ext):
+        for param in module.parameters():
+            if id(param) not in seen_params:
+                params.append(param)
+                seen_params.add(id(param))
     optimizer = torch.optim.AdamW(params, lr=5e-5, weight_decay=1e-4)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
