@@ -264,7 +264,8 @@ class ThinLayerNet_v9_6_MultiscaleHardBC(nn.Module):
             x_net = x_input
 
         raw = self.net(x_net)
-        c_b_free = F.softmax(raw, dim=1)[:, 1:2]
+        time_gate = torch.clamp(T_raw / T_sim, 0.0, 1.0)
+        c_b_free = time_gate * F.softmax(raw, dim=1)[:, 1:2]
         c_b_surface = torch.sigmoid(-potential_theta(T_raw))
         x_gate = torch.clamp(X_raw / delta, 0.0, 1.0)
         C_B = (1.0 - x_gate) * c_b_surface + x_gate * c_b_free
