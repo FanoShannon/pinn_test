@@ -221,7 +221,7 @@ class MultiscaleResidualHead(nn.Module):
         for _ in range(depth):
             layers.append(ResidualMLPBlock(width))
         final_layer = nn.Linear(width, out_features)
-        nn.init.normal_(final_layer.weight, mean=0.0, std=1e-3)
+        nn.init.normal_(final_layer.weight, mean=0.0, std=1e-4)
         nn.init.zeros_(final_layer.bias)
         layers.append(final_layer)
         self.net = nn.Sequential(*layers)
