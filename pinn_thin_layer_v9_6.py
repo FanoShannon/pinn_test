@@ -266,10 +266,12 @@ class ThinLayerNet_v9_6_MultiscaleHardBC(nn.Module):
         else:
             x_net = x_input
 
-        raw = self.net(x_net)
-        time_gate = torch.clamp(T_raw / T_sim, 0.0, 1.0)
-        c_b_free = time_gate * F.softmax(raw, dim=1)[:, 1:2]
         c_b_surface = torch.sigmoid(-potential_theta(T_raw))
+        raw = self.net(x_net)[:, 1:2]
+        time_gate = 1.0 - torch.exp(-torch.clamp(T_raw, min=0.0) / (0.05 * T_sim))
+        # Physics prior only: the interface B tendency follows the electrode Nernst state.
+        c_b_prior_logit = torch.logit(torch.clamp(c_b_surface, 1e-6, 1.0 - 1e-6))
+        c_b_free = time_gate * torch.sigmoid(raw + c_b_prior_logit)
         x_gate = torch.clamp(X_raw / delta, 0.0, 1.0)
         C_B = (1.0 - x_gate) * c_b_surface + x_gate * c_b_free
         C_A = 1.0 - C_B
