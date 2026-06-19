@@ -74,6 +74,22 @@ MODEL_V96_MULTISCALE_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_be
 USE_NORMALIZED_COORDS = True
 
 
+def resolve_checkpoint_paths(arch, checkpoint_dir=None):
+    if arch == "multiscale":
+        current_path = MODEL_V96_MULTISCALE_PATH
+        best_path = MODEL_V96_MULTISCALE_BEST_PATH
+    else:
+        current_path = './pinn_thin_layer_catalytic_v9_6.pth'
+        best_path = './pinn_thin_layer_catalytic_v9_6_best.pth'
+
+    if checkpoint_dir:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        current_path = os.path.join(checkpoint_dir, os.path.basename(current_path))
+        best_path = os.path.join(checkpoint_dir, os.path.basename(best_path))
+
+    return current_path, best_path
+
+
 def normalize_time(T):
     return 2.0 * T / T_sim - 1.0
 
@@ -257,6 +273,16 @@ def potential_theta(T):
 def save_model_v96(model_thin, model_ext, optimizer, scheduler, epoch, path, 
                    loss_history=None, best_val_loss=None, suffix=''):
     save_path = path.replace('.pth', f'{suffix}.pth') if suffix else path
+    save_dir = os.path.dirname(os.path.abspath(save_path))
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+
+    rng_state = {
+        'torch': torch.get_rng_state(),
+        'numpy': np.random.get_state(),
+        'cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+
     torch.save({
         'epoch': epoch,
         'model_thin_state_dict': model_thin.state_dict(),
@@ -264,11 +290,13 @@ def save_model_v96(model_thin, model_ext, optimizer, scheduler, epoch, path,
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
         'loss_history': loss_history if loss_history else {},
-        'best_val_loss': best_val_loss if best_val_loss else float('inf'),
+        'best_val_loss': best_val_loss if best_val_loss is not None else float('inf'),
+        'rng_state': rng_state,
         'parameters': {
             'sigma': sigma, 'theta_i': theta_i, 'theta_switch': theta_switch,
             'T_sim': T_sim, 'delta': delta, 'X_ext_max': X_ext_max,
-            'gamma': gamma, 'k_cat_star': k_cat_star, 'lambda_factor': lambda_factor
+            'gamma': gamma, 'k_cat_star': k_cat_star, 'lambda_factor': lambda_factor,
+            'normalize_inputs': USE_NORMALIZED_COORDS,
         }
     }, save_path)
     print(f"✅ Model saved to {save_path} (epoch {epoch})")
@@ -279,9 +307,19 @@ def load_model_v96(model_thin, model_ext, optimizer, scheduler, path):
         checkpoint = torch.load(path, map_location='cpu', weights_only=False)
         model_thin.load_state_dict(checkpoint['model_thin_state_dict'], strict=False)
         model_ext.load_state_dict(checkpoint['model_ext_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if scheduler and checkpoint['scheduler_state_dict'] is not None:
+        if optimizer and checkpoint.get('optimizer_state_dict') is not None:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if scheduler and checkpoint.get('scheduler_state_dict') is not None:
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+        rng_state = checkpoint.get('rng_state')
+        if rng_state:
+            if rng_state.get('torch') is not None:
+                torch.set_rng_state(rng_state['torch'])
+            if rng_state.get('numpy') is not None:
+                np.random.set_state(rng_state['numpy'])
+            if torch.cuda.is_available() and rng_state.get('cuda') is not None:
+                torch.cuda.set_rng_state_all(rng_state['cuda'])
 
         epoch = checkpoint['epoch']
         loss_history = checkpoint.get('loss_history', {})
@@ -429,7 +467,8 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
 
 # ==================== v9.6 训练函数 - 界面耦合增强 ====================
 def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resume=False,
-                     early_stop=True):
+                     early_stop=True, resume_checkpoint=None, resume_best=False,
+                     save_every=2000):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     model_thin.to(device)
@@ -453,16 +492,41 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     no_improve = 0
     best_val_results = None
 
-    if resume and os.path.exists(MODEL_V96_PATH):
-        start_epoch, loaded_history, _ = load_model_v96(
-            model_thin, model_ext, optimizer, scheduler, MODEL_V96_PATH
+    resume_paths = []
+    if resume_checkpoint:
+        resume_paths.append(resume_checkpoint)
+    elif resume_best:
+        resume_paths.append(MODEL_V96_BEST_PATH)
+    elif resume:
+        resume_paths.extend([MODEL_V96_PATH, MODEL_V96_BEST_PATH])
+
+    if resume_paths:
+        loaded_path = None
+        for candidate_path in resume_paths:
+            if os.path.exists(candidate_path):
+                loaded_path = candidate_path
+                break
+        if loaded_path is None:
+            raise FileNotFoundError(
+                "No resume checkpoint found. Tried: " + ", ".join(resume_paths)
+            )
+
+        start_epoch, loaded_history, loaded_best = load_model_v96(
+            model_thin, model_ext, optimizer, scheduler, loaded_path
         )
         if loaded_history:
             loss_history.update(loaded_history)
-        print(f"Resumed at epoch {start_epoch}")
+        if loaded_best is not None:
+            best_nernst = loaded_best
+            best_epoch = start_epoch
+        print(f"Resumed from {loaded_path} at epoch {start_epoch}")
 
     print(f"\n{'='*80}")
     print(f"Starting v9.6 training from epoch {start_epoch}")
+    print(f"Training for {n_epochs} additional epochs")
+    print(f"Current checkpoint: {MODEL_V96_PATH}")
+    print(f"Best checkpoint:    {MODEL_V96_BEST_PATH}")
+    print(f"Save every:         {save_every} epochs")
     print(f"Key changes:")
     print(f"  1. Interface weight: 50 → 200 (4x increase)")
     print(f"  2. Interface sampling: n_points/2 → max(8000, n_points)")
@@ -728,7 +792,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 phys_results = verify_interface_physics(model_thin, model_ext, device)
                 print_physics_verification(phys_results)
 
-        if (epoch + 1) % 2000 == 0:
+        if save_every > 0 and (epoch + 1) % save_every == 0:
             save_model_v96(model_thin, model_ext, optimizer, scheduler,
                          epoch + 1, MODEL_V96_PATH,
                          loss_history=loss_history, best_val_loss=best_nernst)
@@ -1073,7 +1137,15 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", default=MODEL_V96_BEST_PATH,
                         help="Checkpoint used by --eval-only.")
     parser.add_argument("--resume", action="store_true",
-                        help="Resume from pinn_thin_layer_catalytic_v9_6.pth.")
+                        help="Resume training from the current checkpoint, falling back to best.")
+    parser.add_argument("--resume-best", action="store_true",
+                        help="Resume training from the best checkpoint.")
+    parser.add_argument("--resume-checkpoint", default=None,
+                        help="Explicit checkpoint path to resume training from.")
+    parser.add_argument("--checkpoint-dir", default=None,
+                        help="Directory for current/best checkpoints, e.g. a Google Drive folder on Colab.")
+    parser.add_argument("--save-every", type=int, default=2000,
+                        help="Save the current checkpoint every N epochs. Use 0 to disable periodic saves.")
     parser.add_argument("--legacy-inputs", action="store_true",
                         help="Use raw coordinates for old v9.6 checkpoints.")
     parser.add_argument("--cv-points", type=int, default=8000)
@@ -1083,11 +1155,12 @@ if __name__ == "__main__":
                         help="Disable early stopping and run exactly --epochs epochs.")
     args = parser.parse_args()
 
-    if args.arch == "multiscale":
-        if args.checkpoint == MODEL_V96_BEST_PATH:
-            args.checkpoint = MODEL_V96_MULTISCALE_BEST_PATH
-        MODEL_V96_PATH = MODEL_V96_MULTISCALE_PATH
-        MODEL_V96_BEST_PATH = MODEL_V96_MULTISCALE_BEST_PATH
+    checkpoint_was_default = args.checkpoint == parser.get_default("checkpoint")
+    MODEL_V96_PATH, MODEL_V96_BEST_PATH = resolve_checkpoint_paths(
+        args.arch, args.checkpoint_dir
+    )
+    if checkpoint_was_default:
+        args.checkpoint = MODEL_V96_BEST_PATH
 
     USE_NORMALIZED_COORDS = not args.legacy_inputs
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -1148,9 +1221,13 @@ if __name__ == "__main__":
         print("Starting from scratch")
 
     # 验证初始状态
-    print(f"\n{'='*80}")
-    print(f"Initial Model Status (loaded from {loaded_from})")
-    current_val = validate_model(model_thin, model_ext, device, start_epoch, verbose=True)
+    if args.resume or args.resume_best or args.resume_checkpoint:
+        print("\nResume mode enabled; checkpoint will be loaded inside training.")
+        print("Skipping initial validation before checkpoint load.")
+    else:
+        print(f"\n{'='*80}")
+        print(f"Initial Model Status (loaded from {loaded_from})")
+        current_val = validate_model(model_thin, model_ext, device, start_epoch, verbose=True)
 
     # 开始训练
     print(f"\n{'='*80}")
@@ -1162,7 +1239,10 @@ if __name__ == "__main__":
         n_epochs=args.epochs,
         start_epoch=start_epoch,
         resume=args.resume,
-        early_stop=not args.no_early_stop
+        early_stop=not args.no_early_stop,
+        resume_checkpoint=args.resume_checkpoint,
+        resume_best=args.resume_best,
+        save_every=args.save_every
     )
 
     # 可视化
