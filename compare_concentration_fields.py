@@ -20,7 +20,14 @@ except Exception:
     pass
 
 
-def build_models(arch, normalize_inputs, device):
+def build_models(
+    arch,
+    normalize_inputs,
+    device,
+    green_time_grid=256,
+    green_kernel_points=32,
+    green_history_grad=True,
+):
     if arch == "legacy":
         model_thin = pinn.ThinLayerNet_v9_6(normalize_inputs=normalize_inputs)
         model_ext = pinn.ExternalNet_v9_6(pinn.gamma, normalize_inputs=normalize_inputs)
@@ -30,6 +37,27 @@ def build_models(arch, normalize_inputs, device):
     elif arch == "multiscale_hardbc":
         model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHardBC(normalize_inputs=normalize_inputs)
         model_ext = pinn.ExternalNet_v9_6_Multiscale(pinn.gamma, normalize_inputs=normalize_inputs)
+    elif arch == "his_pinn":
+        interface_state = pinn.HISInterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
+        model_thin = pinn.ThinLayerNet_v9_6_HISPrototype(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_Multiscale(
+            pinn.gamma,
+            normalize_inputs=normalize_inputs,
+        )
+    elif arch == "his_pinn_ext":
+        interface_state = pinn.InterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_MultiscaleHISLayer(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
     elif arch == "multiscale_hermite":
         interface_state = pinn.InterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
         model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(
@@ -37,6 +65,136 @@ def build_models(arch, normalize_inputs, device):
             normalize_inputs=normalize_inputs,
         )
         model_ext = pinn.ExternalNet_v9_6_MultiscaleHermite(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+    elif arch == "multiscale_hermite_extbasis":
+        interface_state = pinn.InterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_MultiscaleHermiteExtBasis(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+    elif arch == "multiscale_green":
+        interface_state = pinn.InterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_MultiscaleGreenKernel(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+    elif arch == "multiscale_green_grid":
+        interface_state = pinn.InterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_MultiscaleGreenGrid(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+            history_grad=green_history_grad,
+            cache_history=False,
+        )
+    elif arch == "multiscale_green_grid_hybrid":
+        interface_state = pinn.InterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_MultiscaleGreenGridHybrid(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+            history_grad=green_history_grad,
+            cache_history=False,
+        )
+    elif arch == "multiscale_green_grid_dynamic":
+        interface_state = pinn.InterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_MultiscaleGreenGridDynamic(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+            history_grad=green_history_grad,
+            cache_history=False,
+        )
+    elif arch == "multiscale_green_grid_interface_memory":
+        interface_state = pinn.InterfaceStateNet_v9_6_Memory(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+        )
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_MultiscaleGreenGridDynamic(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+            history_grad=green_history_grad,
+            cache_history=False,
+        )
+    elif arch == "multiscale_green_grid_memory":
+        interface_state = pinn.InterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_MultiscaleGreenGridMemory(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+            history_grad=green_history_grad,
+            cache_history=False,
+        )
+    elif arch == "multiscale_green_grid_film_abel":
+        interface_state = pinn.InterfaceStateNet_v9_6_FilmAbel(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_MultiscaleGreenGridDynamic(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+            history_grad=green_history_grad,
+            cache_history=False,
+        )
+    elif arch == "multiscale_buffer":
+        interface_state = pinn.InterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_MultiscaleBuffer(
             pinn.gamma,
             interface_state=interface_state,
             normalize_inputs=normalize_inputs,
@@ -74,6 +232,19 @@ def predict_pair(model, t_eval, x_eval, device, batch_size):
     )
 
 
+def predict_surface_current(model_thin, t_eval, device, batch_size):
+    chunks = []
+    model_thin.eval()
+    for start in range(0, len(t_eval), batch_size):
+        t_batch = torch.from_numpy(t_eval[start:start + batch_size].reshape(-1, 1).astype("float32")).to(device)
+        x_batch = torch.zeros_like(t_batch, requires_grad=True)
+        with torch.enable_grad():
+            c_a, _ = model_thin(torch.cat([t_batch, x_batch], dim=1))
+            c_a_x = torch.autograd.grad(c_a.sum(), x_batch, create_graph=False)[0]
+        chunks.append((-c_a_x).detach().cpu().numpy().reshape(-1))
+    return np.concatenate(chunks)
+
+
 def field_metrics(pinn_field, fdm_field):
     diff = pinn_field - fdm_field
     ss_res = float(np.sum(diff**2))
@@ -94,11 +265,37 @@ def field_metrics(pinn_field, fdm_field):
     }
 
 
+def build_cv_eval(model_thin, fdm, device, batch_size, n_cv):
+    if "theta" not in fdm or "J" not in fdm or "t" not in fdm:
+        return None
+    t_all = np.asarray(fdm["t"], dtype=float)
+    theta_all = np.asarray(fdm["theta"], dtype=float)
+    j_fdm_all = np.asarray(fdm["J"], dtype=float)
+    cv_idx = select_indices(len(t_all), n_cv)
+    t_cv = t_all[cv_idx]
+    theta_cv = theta_all[cv_idx]
+    j_fdm = j_fdm_all[cv_idx]
+    j_pinn = predict_surface_current(model_thin, t_cv, device, batch_size)
+    return {
+        "t": t_cv,
+        "theta": theta_cv,
+        "fdm_J": j_fdm,
+        "pinn_J": j_pinn,
+    }
+
+
 def compare(args):
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
     normalize_inputs = args.input_mode == "normalized"
 
-    model_thin, model_ext = build_models(args.arch, normalize_inputs, device)
+    model_thin, model_ext = build_models(
+        args.arch,
+        normalize_inputs,
+        device,
+        green_time_grid=args.green_time_grid,
+        green_kernel_points=args.green_kernel_points,
+        green_history_grad=not args.green_detach_history,
+    )
     epoch = load_checkpoint(model_thin, model_ext, args.checkpoint)
 
     with open(args.fdm_pkl, "rb") as handle:
@@ -141,6 +338,9 @@ def compare(args):
         "C_C_int is evaluated from the FDM concentration field C_C[:,0], "
         "not from the stored C_C_int history array, whose first element is uninitialized."
     )
+    cv_eval = build_cv_eval(model_thin, fdm, device, args.batch_size, args.cv_points)
+    if cv_eval is not None:
+        metrics["CV_J"] = field_metrics(cv_eval["pinn_J"], cv_eval["fdm_J"])
 
     if args.output_figure:
         plot_residual_summary(
@@ -151,6 +351,7 @@ def compare(args):
             fdm_eval,
             pinn_eval,
             metrics,
+            cv_eval=cv_eval,
         )
 
     if args.output_npz:
@@ -161,6 +362,7 @@ def compare(args):
             x_out=x_out_eval,
             **{f"fdm_{k}": v for k, v in fdm_eval.items()},
             **{f"pinn_{k}": v for k, v in pinn_eval.items()},
+            **({f"cv_{k}": v for k, v in cv_eval.items()} if cv_eval is not None else {}),
         )
 
     if args.output_json:
@@ -181,10 +383,27 @@ def compare(args):
             f"{row['pinn_min']:.8e},{row['pinn_max']:.8e}"
         )
     print(f"overall_rmse,{metrics['overall']['rmse']:.8e}")
+    if "CV_J" in metrics:
+        row = metrics["CV_J"]
+        print(
+            f"CV_J,{row['rmse']:.8e},{row['mae']:.8e},{row['max_abs']:.8e},"
+            f"{row['bias']:.8e},{row['r2']:.8e},{row['nrmse']:.8e},"
+            f"{row['fdm_min']:.8e},{row['fdm_max']:.8e},"
+            f"{row['pinn_min']:.8e},{row['pinn_max']:.8e}"
+        )
     return metrics
 
 
-def plot_residual_summary(path, t_eval, x_in_eval, x_out_eval, fdm_eval, pinn_eval, metrics):
+def plot_residual_summary(
+    path,
+    t_eval,
+    x_in_eval,
+    x_out_eval,
+    fdm_eval,
+    pinn_eval,
+    metrics,
+    cv_eval=None,
+):
     names = ["C_A", "C_B", "C_C", "C_D"]
     residuals = {name: pinn_eval[name] - fdm_eval[name] for name in names}
 
@@ -234,7 +453,30 @@ def plot_residual_summary(path, t_eval, x_in_eval, x_out_eval, fdm_eval, pinn_ev
     ax.set_ylabel("PINN - FDM")
     ax.grid(alpha=0.3)
 
-    axes[1, 3].axis("off")
+    ax = axes[1, 3]
+    if cv_eval is not None:
+        ax.plot(cv_eval["theta"], cv_eval["fdm_J"], color="blue", linewidth=2.2, label="FDM")
+        ax.plot(cv_eval["theta"], cv_eval["pinn_J"], color="#F58518", linewidth=1.8, linestyle="--", label="PINN")
+        fdm_pc = int(np.argmin(cv_eval["fdm_J"]))
+        fdm_pa = int(np.argmax(cv_eval["fdm_J"]))
+        ax.scatter(cv_eval["theta"][fdm_pc], cv_eval["fdm_J"][fdm_pc], color="red", s=28, zorder=3)
+        ax.scatter(cv_eval["theta"][fdm_pa], cv_eval["fdm_J"][fdm_pa], color="green", s=28, zorder=3)
+        ax.set_title("CV from current model")
+        ax.set_xlabel("Potential theta")
+        ax.set_ylabel("Current J")
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=8, loc="best")
+    else:
+        ax.axis("off")
+        ax.text(
+            0.5,
+            0.5,
+            "CV data not found",
+            ha="center",
+            va="center",
+            fontsize=12,
+            color="0.35",
+        )
 
     fig.savefig(path, dpi=180, bbox_inches="tight")
     plt.close(fig)
@@ -246,7 +488,10 @@ def main():
     )
     parser.add_argument("--fdm-pkl", default="../FDM/thin_layer_catalytic_v41_fixed.pkl")
     parser.add_argument("--checkpoint", default="./pinn_thin_layer_catalytic_v9_6_best.pth")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "multiscale_hermite"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--green-time-grid", type=int, default=256)
+    parser.add_argument("--green-kernel-points", type=int, default=32)
+    parser.add_argument("--green-detach-history", action="store_true")
     parser.add_argument("--input-mode", choices=["legacy", "normalized"], default="legacy")
     parser.add_argument("--n-time", type=int, default=160)
     parser.add_argument("--n-x-in", type=int, default=120)
@@ -256,6 +501,7 @@ def main():
     parser.add_argument("--output-json", default="./concentration_compare_metrics.json")
     parser.add_argument("--output-npz", default="./concentration_compare_fields.npz")
     parser.add_argument("--output-figure", default="./concentration_residual_summary.png")
+    parser.add_argument("--cv-points", type=int, default=2000, help="Number of FDM/PINN CV points plotted in the summary figure.")
     args = parser.parse_args()
     compare(args)
 
