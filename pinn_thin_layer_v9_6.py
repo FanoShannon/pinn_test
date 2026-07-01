@@ -2776,7 +2776,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                      fdm_compare_save_fields=False, reset_optimizer_state=False,
                      base_train_points=8000, max_train_points=15000,
                      train_point_growth=40, progress_every=50,
-                     empty_cache_every=0):
+                     empty_cache_every=0, learning_rate=5e-5,
+                     abort_on_nan=False):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     model_thin.to(device)
@@ -2789,7 +2790,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             if id(param) not in seen_params:
                 params.append(param)
                 seen_params.add(id(param))
-    optimizer = torch.optim.AdamW(params, lr=5e-5, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(params, lr=learning_rate, weight_decay=1e-4)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=n_epochs, eta_min=1e-7)
@@ -3140,10 +3141,27 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         )
 
         # ========== 5. Optimization ==========
+        if not torch.isfinite(total_loss):
+            print(f"Non-finite total loss at epoch {epoch}: {total_loss.item()}")
+            if abort_on_nan:
+                raise FloatingPointError(f"Non-finite total loss at epoch {epoch}")
+            if hasattr(model_ext, "clear_step_cache"):
+                model_ext.clear_step_cache()
+            continue
+
         optimizer.zero_grad(set_to_none=True)
         total_loss.backward()
 
-        torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
+        if not torch.isfinite(grad_norm):
+            print(f"Non-finite gradient norm at epoch {epoch}: {grad_norm.item()}")
+            optimizer.zero_grad(set_to_none=True)
+            if hasattr(model_ext, "clear_step_cache"):
+                model_ext.clear_step_cache()
+            if abort_on_nan:
+                raise FloatingPointError(f"Non-finite gradient norm at epoch {epoch}")
+            continue
+
         optimizer.step()
         scheduler.step()
         if hasattr(model_ext, "clear_step_cache"):
@@ -3769,6 +3787,10 @@ if __name__ == "__main__":
                         help="Print a lightweight heartbeat every N epochs. Use 0 to disable.")
     parser.add_argument("--empty-cache-every", type=int, default=0,
                         help="Call torch.cuda.empty_cache() every N training steps. Use 0 to disable.")
+    parser.add_argument("--learning-rate", type=float, default=5e-5,
+                        help="Initial AdamW learning rate.")
+    parser.add_argument("--abort-on-nan", action="store_true",
+                        help="Abort before optimizer.step if loss or gradient norm is non-finite.")
     parser.add_argument("--reset-best-score", action="store_true",
                         help="Ignore checkpoint best score when resuming after changing loss weights.")
     parser.add_argument("--reset-optimizer-state", action="store_true",
@@ -3904,6 +3926,8 @@ if __name__ == "__main__":
         train_point_growth=args.train_point_growth,
         progress_every=args.progress_every,
         empty_cache_every=args.empty_cache_every,
+        learning_rate=args.learning_rate,
+        abort_on_nan=args.abort_on_nan,
     )
 
     # 可视化

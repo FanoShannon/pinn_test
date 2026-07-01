@@ -167,6 +167,36 @@ checkpoint instead of the dynamic checkpoint:
 --resume-checkpoint /content/gdrive/MyDrive/pinn_v96/checkpoints_film_abel_v1/pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel.pth
 ```
 
+### From-zero Film-Abel 256x64 curriculum
+
+For a clean from-zero run that keeps the Green history resolution fixed across
+the architecture switch, use:
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!bash run_curriculum_v96_film_abel_256x64.sh
+```
+
+This runs:
+
+- Stage 1: `multiscale_green_grid_dynamic`, `M=256`, `K=64`, from scratch.
+- Stage 2: `multiscale_green_grid_film_abel`, `M=256`, `K=64`, from the Stage 1 best checkpoint.
+
+Outputs are isolated under:
+
+```text
+runs_film_abel_256x64_two_stage/<timestamp>/
+```
+
+Stage 1 is also copied to:
+
+```text
+runs_film_abel_256x64_two_stage/<timestamp>/stage1_finished_snapshot/
+```
+
+so a Stage 2 NaN does not obscure the completed Stage 1 checkpoint and log.
+The script uses `--abort-on-nan` and a smaller Stage 2 learning rate by default.
+
 ## Posterior Evaluation
 
 ```bash
