@@ -92,6 +92,8 @@ MODEL_V96_MULTISCALE_GREEN_GRID_MEMORY_PATH = './pinn_thin_layer_catalytic_v9_6_
 MODEL_V96_MULTISCALE_GREEN_GRID_MEMORY_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_memory_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_best.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema_best.pth'
 MODEL_V96_MULTISCALE_BUFFER_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_buffer.pth'
 MODEL_V96_MULTISCALE_BUFFER_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_buffer_best.pth'
 MODEL_V96_MULTISCALE_FLUXBUFFER_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_fluxbuffer.pth'
@@ -140,6 +142,9 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     elif arch == "multiscale_green_grid_film_abel":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_BEST_PATH
+    elif arch == "multiscale_green_grid_film_abel_ema":
+        current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH
+        best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH
     elif arch == "multiscale_buffer":
         current_path = MODEL_V96_MULTISCALE_BUFFER_PATH
         best_path = MODEL_V96_MULTISCALE_BUFFER_BEST_PATH
@@ -723,6 +728,9 @@ class InterfaceStateNet_v9_6_FilmAbel(nn.Module):
         corr_logit = self.residual_logit_scale * time_gate * torch.tanh(corr_raw)
         return gamma * torch.sigmoid(prior_logit + corr_logit)
 
+    def _c_d_correction_raw(self, features):
+        return self.residual_net(features)
+
     def _feature_tensor(self, T_raw, theta, theta_dot, c_b_surface, dc_b_surface_dt,
                         c_d_prior, j_hist, d_j_hist, q_hist, memories):
         theta_scale = max(abs(float(theta_i)), abs(float(theta_switch)), 1.0)
@@ -821,7 +829,7 @@ class InterfaceStateNet_v9_6_FilmAbel(nn.Module):
                 q_hist,
                 memory,
             )
-            c_d_int = self._bounded_c_d_int(c_d_prior, self.residual_net(features), t)
+            c_d_int = self._bounded_c_d_int(c_d_prior, self._c_d_correction_raw(features), t)
             c_c_int = gamma - c_d_int
             c_b_int, j_rxn, surface_slope = self._film_reaction(c_b_surface, c_c_int)
 
@@ -891,7 +899,7 @@ class InterfaceStateNet_v9_6_FilmAbel(nn.Module):
             q_hist,
             memories,
         )
-        c_d_int = self._bounded_c_d_int(c_d_prior, self.residual_net(features), T_raw)
+        c_d_int = self._bounded_c_d_int(c_d_prior, self._c_d_correction_raw(features), T_raw)
         c_c_int = gamma - c_d_int
         c_b_int, j_rxn, surface_slope = self._film_reaction(c_b_surface, c_c_int)
         return {
@@ -903,6 +911,36 @@ class InterfaceStateNet_v9_6_FilmAbel(nn.Module):
             "Q_rxn": q_hist,
             "surface_slope": surface_slope,
         }
+
+
+class InterfaceStateNet_v9_6_FilmAbelEMA(InterfaceStateNet_v9_6_FilmAbel):
+    """Film-Abel interface state with explicit stable-memory anti-drift.
+
+    The base Film-Abel chain computes C_C_int from a causal Abel prior plus a
+    small residual.  That is physically meaningful, but Abel's long tail can
+    carry a reverse-scan phase error to late times.  This ablation keeps the
+    Abel prior, then adds a zero-initialized residual head driven by the same
+    normalized multi-exponential memories.  These memory features behave like a
+    bank of EMA filters, so the correction can learn controlled forgetting
+    instead of only accumulating the signed flux history.
+    """
+
+    def __init__(self, normalize_inputs=True, time_grid_points=256, kernel_points=64):
+        super().__init__(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=time_grid_points,
+            kernel_points=kernel_points,
+        )
+        self.film_abel_ema_interface = True
+        self.ema_drift_net = MultiscaleResidualHead(out_features=1, width=128, depth=3, in_features=13)
+        nn.init.zeros_(self.ema_drift_net.net[-1].weight)
+        nn.init.zeros_(self.ema_drift_net.net[-1].bias)
+        self.ema_drift_scale = 0.75
+
+    def _c_d_correction_raw(self, features):
+        base_raw = super()._c_d_correction_raw(features)
+        ema_raw = self.ema_drift_net(features)
+        return base_raw + self.ema_drift_scale * torch.tanh(ema_raw)
 
 
 class HISInterfaceStateNet_v9_6(nn.Module):
@@ -2347,6 +2385,24 @@ def create_models_v96(
                 cache_history=green_cache_history,
             ),
         )
+    if arch == "multiscale_green_grid_film_abel_ema":
+        interface_state = InterfaceStateNet_v9_6_FilmAbelEMA(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        return (
+            ThinLayerNet_v9_6_MultiscaleHermite(interface_state=interface_state, normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6_MultiscaleGreenGridMemory(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
     if arch == "multiscale_buffer":
         interface_state = InterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
         return (
@@ -3605,7 +3661,7 @@ def save_cv_csv(results, path="./cv_theta_J_v9_6.csv"):
     print(f"CV theta-J data saved to: {path}")
 
 
-def compare_with_fdm(results, fdm_csv_path="../FDM/v41_cv_data_fixed.csv"):
+def compare_with_fdm(results, fdm_csv_path="../FDM/kcat1_v42_cv_data_v42.csv"):
     if not os.path.exists(fdm_csv_path):
         print(f"FDM comparison skipped; file not found: {fdm_csv_path}")
         return None
@@ -3739,8 +3795,8 @@ if __name__ == "__main__":
     parser.add_argument("--legacy-inputs", action="store_true",
                         help="Use raw coordinates for old v9.6 checkpoints.")
     parser.add_argument("--cv-points", type=int, default=8000)
-    parser.add_argument("--fdm-csv", default="../FDM/v41_cv_data_fixed.csv")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--fdm-csv", default="../FDM/kcat1_v42_cv_data_v42.csv")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256,
                         help="Global history time-grid size for multiscale_green_grid.")
     parser.add_argument("--green-kernel-points", type=int, default=32,

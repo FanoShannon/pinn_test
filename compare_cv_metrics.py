@@ -42,7 +42,7 @@ def compare_cv(fdm_csv, pinn_csv):
 
 def main():
     parser = argparse.ArgumentParser(description="Compare PINN CV output with FDM CV data for evaluation only.")
-    parser.add_argument("--fdm", default="../FDM/v41_cv_data_fixed.csv")
+    parser.add_argument("--fdm", default="../FDM/kcat1_v42_cv_data_v42.csv")
     parser.add_argument("--pinn", default="./cv_theta_J_v9_6.csv")
     args = parser.parse_args()
 

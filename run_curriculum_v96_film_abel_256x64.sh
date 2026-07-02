@@ -34,7 +34,7 @@ GREEN_KERNEL_POINTS="${GREEN_KERNEL_POINTS:-64}"
 BASE_TRAIN_POINTS="${BASE_TRAIN_POINTS:-8000}"
 MAX_TRAIN_POINTS="${MAX_TRAIN_POINTS:-9000}"
 
-FDM_PKL="${FDM_PKL:-/content/gdrive/MyDrive/FDM/thin_layer_catalytic_v41_fixed.pkl}"
+FDM_PKL="${FDM_PKL:-/content/gdrive/MyDrive/FDM/kcat1_v42_thin_layer_catalytic_v42.pkl}"
 FDM_COMPARE_EVERY="${FDM_COMPARE_EVERY:-0}"
 
 cd "$WORK_DIR"

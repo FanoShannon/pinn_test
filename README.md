@@ -33,6 +33,22 @@ Main code files:
 All metrics below use FDM posterior evaluation only.  FDM data is not used in
 training.
 
+The historical table below was produced against the older v4.1 FDM reference.
+Keep it only for branch history.  New Colab runs and final evaluation should use
+the finite-volume v4.2 reference:
+
+- Colab: `/content/gdrive/MyDrive/FDM/kcat1_v42_thin_layer_catalytic_v42.pkl`
+- Local: `../FDM/kcat1_v42_thin_layer_catalytic_v42.pkl`
+
+Current v4.2 posterior checkpoints:
+
+| Checkpoint | `C_C` R2 | `C_C` RMSE | `C_C_int` R2 | `C_C_int` RMSE | `CV_J` R2 | Overall RMSE |
+|---|---:|---:|---:|---:|---:|---:|
+| `film_abel_256x64_best` | 0.9813 | 0.1462 | 0.9976 | 0.0697 | 0.9983 | 0.1105 |
+| `film_abel_ema_500ep_best` | 0.9821 | 0.1428 | 0.9971 | 0.0768 | 0.9983 | 0.1080 |
+
+Historical v4.1 posterior checkpoints:
+
 | Checkpoint | `C_C` R2 | `C_C` RMSE | `C_C_int` R2 | `C_C_int` RMSE | `CV_J` R2 | Overall RMSE |
 |---|---:|---:|---:|---:|---:|---:|
 | `dynamic_best_54500` | 0.7419 | 0.5072 | 0.8669 | 0.4978 | 0.9969 | 0.3834 |
@@ -56,8 +72,9 @@ Interpretation:
 Minimum files needed to reproduce the current comparison:
 
 - FDM posterior data:
-  - `../FDM/thin_layer_catalytic_v41_fixed.pkl`
-  - `../FDM/v41_cv_data_fixed.csv`
+  - `../FDM/kcat1_v42_thin_layer_catalytic_v42.pkl`
+  - `../FDM/kcat1_v42_cv_data_v42.csv`
+  - Google Drive mirror: `/content/gdrive/MyDrive/FDM/kcat1_v42_thin_layer_catalytic_v42.pkl`
 - Dynamic warm start:
   - `checkpoints_green_grid_dynamic_v1/pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_dynamic.pth`
   - `checkpoints_green_grid_dynamic_v1/pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_dynamic_best.pth`
@@ -100,7 +117,7 @@ Use:
   --base-train-points 8000 \
   --max-train-points 9000 \
   --train-point-growth 0 \
-  --fdm-compare-pkl /content/gdrive/MyDrive/FDM/thin_layer_catalytic_v41_fixed.pkl \
+  --fdm-compare-pkl /content/gdrive/MyDrive/FDM/kcat1_v42_thin_layer_catalytic_v42.pkl \
   --fdm-compare-every 500 \
   --fdm-compare-dir /content/gdrive/MyDrive/pinn_v96/fdm_compare_green_grid_dynamic_v1 \
   2>&1 | tee -a /content/gdrive/MyDrive/pinn_v96/checkpoints_green_grid_dynamic_v1/v96_green_grid_dynamic_training.log
@@ -127,7 +144,7 @@ Use:
   --base-train-points 8000 \
   --max-train-points 9000 \
   --train-point-growth 0 \
-  --fdm-compare-pkl /content/gdrive/MyDrive/FDM/thin_layer_catalytic_v41_fixed.pkl \
+  --fdm-compare-pkl /content/gdrive/MyDrive/FDM/kcat1_v42_thin_layer_catalytic_v42.pkl \
   --fdm-compare-every 500 \
   --fdm-compare-dir /content/gdrive/MyDrive/pinn_v96/fdm_compare_green_grid_interface_memory_v1 \
   2>&1 | tee -a /content/gdrive/MyDrive/pinn_v96/checkpoints_green_grid_interface_memory_v1/v96_green_grid_interface_memory_training.log
@@ -154,7 +171,7 @@ Use:
   --base-train-points 8000 \
   --max-train-points 9000 \
   --train-point-growth 0 \
-  --fdm-compare-pkl /content/gdrive/MyDrive/FDM/thin_layer_catalytic_v41_fixed.pkl \
+  --fdm-compare-pkl /content/gdrive/MyDrive/FDM/kcat1_v42_thin_layer_catalytic_v42.pkl \
   --fdm-compare-every 500 \
   --fdm-compare-dir /content/gdrive/MyDrive/pinn_v96/fdm_compare_film_abel_v1 \
   2>&1 | tee -a /content/gdrive/MyDrive/pinn_v96/checkpoints_film_abel_v1/v96_film_abel_training.log
@@ -204,7 +221,7 @@ PYTHONIOENCODING=utf-8 python -u compare_concentration_fields.py \
   --arch multiscale_green_grid_film_abel \
   --input-mode normalized \
   --checkpoint checkpoints_film_abel_v1/pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_best.pth \
-  --fdm-pkl ../FDM/thin_layer_catalytic_v41_fixed.pkl \
+  --fdm-pkl ../FDM/kcat1_v42_thin_layer_catalytic_v42.pkl \
   --green-time-grid 256 \
   --green-kernel-points 64 \
   --n-time 160 \
