@@ -92,6 +92,8 @@ MODEL_V96_MULTISCALE_GREEN_GRID_MEMORY_PATH = './pinn_thin_layer_catalytic_v9_6_
 MODEL_V96_MULTISCALE_GREEN_GRID_MEMORY_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_memory_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_best.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema_best.pth'
 MODEL_V96_MULTISCALE_BUFFER_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_buffer.pth'
@@ -142,6 +144,9 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     elif arch == "multiscale_green_grid_film_abel":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_BEST_PATH
+    elif arch == "multiscale_green_grid_film_abel_kernelmix":
+        current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_PATH
+        best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_BEST_PATH
     elif arch == "multiscale_green_grid_film_abel_ema":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH
@@ -941,6 +946,212 @@ class InterfaceStateNet_v9_6_FilmAbelEMA(InterfaceStateNet_v9_6_FilmAbel):
         base_raw = super()._c_d_correction_raw(features)
         ema_raw = self.ema_drift_net(features)
         return base_raw + self.ema_drift_scale * torch.tanh(ema_raw)
+
+
+class InterfaceStateNet_v9_6_FilmAbelKernelMix(InterfaceStateNet_v9_6_FilmAbel):
+    """Film-Abel interface with a learnable memory-kernel mixture.
+
+    EMA used finite-memory features only inside the residual head.  This variant
+    changes the interface prior itself:
+
+        C_D_int prior = alpha * Abel[J] + sum beta_i * ExpMemory_i[J]
+                      - dt_phase(state) * Abel[dJ]
+
+    New parameters are zero-initialized so loading a Film-Abel checkpoint starts
+    near the v1 solution.  Training can then reduce Abel long-tail drift by
+    moving weight into short/mid/long finite-memory kernels instead of asking a
+    residual network to undo the whole accumulated error.
+    """
+
+    def __init__(self, normalize_inputs=True, time_grid_points=256, kernel_points=64):
+        super().__init__(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=time_grid_points,
+            kernel_points=kernel_points,
+        )
+        self.film_abel_kernelmix_interface = True
+        self.kernelmix_alpha_raw = nn.Parameter(torch.zeros(1))
+        self.kernelmix_beta_raw = nn.Parameter(torch.zeros(4, dtype=torch.float32))
+        self.kernelmix_beta_gain = 0.45
+        self.dynamic_phase_net = MultiscaleResidualHead(out_features=1, width=64, depth=2, in_features=4)
+        nn.init.zeros_(self.dynamic_phase_net.net[-1].weight)
+        nn.init.zeros_(self.dynamic_phase_net.net[-1].bias)
+        self.dynamic_phase_scale = 0.025 * T_sim
+
+    def _kernelmix_alpha(self):
+        return 1.0 + 0.20 * torch.tanh(self.kernelmix_alpha_raw)
+
+    def _kernelmix_beta(self):
+        return self.kernelmix_beta_gain * torch.tanh(self.kernelmix_beta_raw).reshape(1, -1)
+
+    def _dynamic_phase_features(self, theta, theta_dot, j_hist, d_j_hist):
+        theta_scale = max(abs(float(theta_i)), abs(float(theta_switch)), 1.0)
+        theta_dot_scale = theta_scale / max(float(T_sim), 1e-12)
+        j_scale = max(float(k_cat_star * gamma), 1.0)
+        dj_scale = max(j_scale / max(float(T_sim), 1e-12), 1e-12)
+        return torch.cat([
+            theta / theta_scale,
+            theta_dot / theta_dot_scale,
+            j_hist / j_scale,
+            d_j_hist / dj_scale,
+        ], dim=1)
+
+    def _dynamic_phase_shift(self, theta, theta_dot, j_hist, d_j_hist):
+        raw = self.dynamic_phase_net(self._dynamic_phase_features(theta, theta_dot, j_hist, d_j_hist))
+        return self._phase_shift().to(device=raw.device, dtype=raw.dtype) + self.dynamic_phase_scale * torch.tanh(raw)
+
+    def _finite_memory_from_grid(self, T_raw, value_grid):
+        t_pos = torch.clamp(T_raw, min=1e-6 * T_sim)
+        nodes = self.kernel_nodes.reshape(1, -1).to(device=T_raw.device, dtype=T_raw.dtype)
+        tau = t_pos * nodes
+        dtau = torch.clamp(t_pos * (1.0 - nodes), min=1e-8 * T_sim)
+        value_tau = self._interp_scalar_grid(tau, value_grid).unsqueeze(-1)
+        lambdas = self.film_abel_memory_lambdas.to(device=T_raw.device, dtype=T_raw.dtype).reshape(1, 1, -1)
+        diffusion = torch.clamp(self._abel_diffusion().to(device=T_raw.device, dtype=T_raw.dtype), min=1e-8)
+        kernel = torch.exp(-dtau.unsqueeze(-1) / torch.clamp(lambdas, min=1e-6))
+        kernel = kernel / torch.sqrt(torch.clamp(np.pi * diffusion * lambdas, min=1e-12))
+        return T_raw * torch.mean(value_tau * kernel, dim=1)
+
+    def _finite_memory_from_previous(self, value_prev, lags, dt, device, dtype):
+        lambdas = self.film_abel_memory_lambdas.to(device=device, dtype=dtype)
+        diffusion = torch.clamp(self._abel_diffusion().to(device=device, dtype=dtype), min=1e-8)
+        kernel = torch.exp(-lags / torch.clamp(lambdas, min=1e-6))
+        kernel = kernel / torch.sqrt(torch.clamp(np.pi * diffusion * lambdas, min=1e-12))
+        return torch.sum(value_prev * kernel, dim=0, keepdim=True) * dt
+
+    def _abel_from_previous(self, value_prev, lags, dt, device, dtype):
+        diffusion = torch.clamp(self._abel_diffusion().to(device=device, dtype=dtype), min=1e-8)
+        gain = self._abel_gain().to(device=device, dtype=dtype)
+        kernel = gain / torch.sqrt(torch.clamp(np.pi * diffusion * lags, min=1e-12))
+        return torch.sum(value_prev * kernel, dim=0, keepdim=True) * dt
+
+    def _kernelmix_prior(self, abel_prior, finite_terms):
+        beta = self._kernelmix_beta().to(device=abel_prior.device, dtype=abel_prior.dtype)
+        alpha = self._kernelmix_alpha().to(device=abel_prior.device, dtype=abel_prior.dtype)
+        return alpha * abel_prior + torch.sum(beta * finite_terms, dim=1, keepdim=True)
+
+    def _abel_memory_from_grid(self, T_raw, j_grid, d_j_grid=None):
+        abel_j = self._abel_convolution_from_grid(T_raw, j_grid)
+        finite_j = self._finite_memory_from_grid(T_raw, j_grid)
+        c_d = self._kernelmix_prior(abel_j, finite_j)
+        if d_j_grid is not None:
+            theta, theta_dot, _, _ = self._surface_state(T_raw)
+            j_hist = self._interp_multi_grid(T_raw, j_grid)
+            d_j_hist = self._interp_multi_grid(T_raw, d_j_grid)
+            phase = self._dynamic_phase_shift(theta, theta_dot, j_hist, d_j_hist)
+            c_d = c_d - phase * self._abel_convolution_from_grid(T_raw, d_j_grid)
+        return c_d
+
+    def _history_grid(self, T_ref):
+        use_cache = self.training and torch.is_grad_enabled()
+        cache_key = (T_ref.device, T_ref.dtype, torch.is_grad_enabled())
+        if use_cache and self._film_abel_cache is not None and self._film_abel_cache[0] == cache_key:
+            return self._film_abel_cache[1]
+
+        device = T_ref.device
+        dtype = T_ref.dtype
+        t_grid = self.time_grid.to(device=device, dtype=dtype)
+        dt = float(T_sim) / float(self.time_grid_points - 1)
+        lambdas = self.film_abel_memory_lambdas.to(device=device, dtype=dtype)
+        decay = torch.exp(-dt / torch.clamp(lambdas, min=1e-6))
+
+        j_rows = []
+        d_j_rows = []
+        cb_surface_rows = []
+        cb_int_rows = []
+        cc_int_rows = []
+        cd_int_rows = []
+        cd_prior_rows = []
+        slope_rows = []
+        q_rows = []
+        memory_rows = []
+
+        q_hist = torch.zeros(1, 1, device=device, dtype=dtype)
+        memory = torch.zeros(1, lambdas.shape[1], device=device, dtype=dtype)
+        last_j = torch.zeros(1, 1, device=device, dtype=dtype)
+        last_d_j = torch.zeros(1, 1, device=device, dtype=dtype)
+
+        for idx in range(self.time_grid_points):
+            t = t_grid[idx:idx + 1]
+            theta, theta_dot, c_b_surface, dc_b_surface_dt = self._surface_state(t)
+            if idx == 0:
+                c_d_prior = torch.zeros(1, 1, device=device, dtype=dtype)
+            else:
+                j_prev = torch.cat(j_rows, dim=0)
+                d_j_prev = torch.cat(d_j_rows, dim=0)
+                steps = torch.arange(idx, device=device, dtype=dtype).reshape(-1, 1)
+                lags = (float(idx) - steps - 0.5) * dt
+                abel_j = self._abel_from_previous(j_prev, lags, dt, device, dtype)
+                finite_j = self._finite_memory_from_previous(j_prev, lags, dt, device, dtype)
+                c_d_prior = self._kernelmix_prior(abel_j, finite_j)
+                abel_d_j = self._abel_from_previous(d_j_prev, lags, dt, device, dtype)
+                phase = self._dynamic_phase_shift(theta, theta_dot, last_j, last_d_j)
+                c_d_prior = c_d_prior - phase * abel_d_j
+
+            features = self._feature_tensor(
+                t,
+                theta,
+                theta_dot,
+                c_b_surface,
+                dc_b_surface_dt,
+                c_d_prior,
+                last_j,
+                last_d_j,
+                q_hist,
+                memory,
+            )
+            c_d_int = self._bounded_c_d_int(c_d_prior, self._c_d_correction_raw(features), t)
+            c_c_int = gamma - c_d_int
+            c_b_int, j_rxn, surface_slope = self._film_reaction(c_b_surface, c_c_int)
+
+            if idx == 0:
+                d_j_cur = torch.zeros_like(j_rxn)
+            else:
+                d_j_cur = (j_rxn - j_rows[-1]) / dt
+
+            q_next = q_hist + j_rxn * dt
+            memory_next = decay * memory + j_rxn * dt
+
+            cb_surface_rows.append(c_b_surface)
+            cb_int_rows.append(c_b_int)
+            cc_int_rows.append(c_c_int)
+            cd_int_rows.append(c_d_int)
+            cd_prior_rows.append(c_d_prior)
+            j_rows.append(j_rxn)
+            d_j_rows.append(d_j_cur)
+            slope_rows.append(surface_slope)
+            q_rows.append(q_next)
+            memory_rows.append(memory_next)
+
+            q_hist = q_next
+            memory = memory_next
+            last_j = j_rxn
+            last_d_j = d_j_cur
+
+        j_grid = torch.cat(j_rows, dim=0)
+        if self.time_grid_points > 1:
+            d_j_grid = torch.zeros_like(j_grid)
+            d_j_grid[1:-1] = (j_grid[2:] - j_grid[:-2]) / (2.0 * dt)
+            d_j_grid[0] = (j_grid[1] - j_grid[0]) / dt
+            d_j_grid[-1] = (j_grid[-1] - j_grid[-2]) / dt
+        else:
+            d_j_grid = torch.zeros_like(j_grid)
+
+        history = {
+            "C_B_surface": torch.cat(cb_surface_rows, dim=0),
+            "C_B_int": torch.cat(cb_int_rows, dim=0),
+            "C_C_int": torch.cat(cc_int_rows, dim=0),
+            "C_D_int": torch.cat(cd_int_rows, dim=0),
+            "C_D_prior": torch.cat(cd_prior_rows, dim=0),
+            "J": j_grid,
+            "dJ": d_j_grid,
+            "surface_slope": torch.cat(slope_rows, dim=0),
+            "Q": torch.cat(q_rows, dim=0),
+            "M": torch.cat(memory_rows, dim=0),
+        }
+        if use_cache:
+            self._film_abel_cache = (cache_key, history)
+        return history
 
 
 class HISInterfaceStateNet_v9_6(nn.Module):
@@ -2385,6 +2596,24 @@ def create_models_v96(
                 cache_history=green_cache_history,
             ),
         )
+    if arch == "multiscale_green_grid_film_abel_kernelmix":
+        interface_state = InterfaceStateNet_v9_6_FilmAbelKernelMix(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        return (
+            ThinLayerNet_v9_6_MultiscaleHermite(interface_state=interface_state, normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6_MultiscaleGreenGridDynamic(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
     if arch == "multiscale_green_grid_film_abel_ema":
         interface_state = InterfaceStateNet_v9_6_FilmAbelEMA(
             normalize_inputs=normalize_inputs,
@@ -2976,6 +3205,13 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 f"memory_lambdas={interface_state.film_abel_memory_lambdas.detach().cpu().numpy().reshape(-1).tolist()}, "
                 "C_B_int=C_B_surface/(1+k*delta*C_C_int/D_B), "
                 "C_D_int=Abel[J]-dt_phase*Abel[dJ]+small_residual"
+            )
+        if getattr(interface_state, "film_abel_kernelmix_interface", False):
+            beta = interface_state._kernelmix_beta().detach().cpu().numpy().reshape(-1).tolist()
+            print(
+                " 13. Film-Abel KernelMix prior: "
+                "C_D_prior=alpha*Abel[J]+sum(beta_i*ExpMemory_i[J])-dt_phase(state)*Abel[dJ]; "
+                f"alpha={float(interface_state._kernelmix_alpha().detach().cpu()):.4f}, beta={beta}"
             )
     print(f"{'='*80}")
 
@@ -3796,7 +4032,7 @@ if __name__ == "__main__":
                         help="Use raw coordinates for old v9.6 checkpoints.")
     parser.add_argument("--cv-points", type=int, default=8000)
     parser.add_argument("--fdm-csv", default="../FDM/kcat1_v42_cv_data_v42.csv")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256,
                         help="Global history time-grid size for multiscale_green_grid.")
     parser.add_argument("--green-kernel-points", type=int, default=32,

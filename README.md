@@ -27,6 +27,7 @@ Main code files:
 | Dynamic Green | `multiscale_green_grid_dynamic` | Adds dynamic inputs: `theta`, `dtheta/dt`, `J`, `dJ/dt`, `Q` | `checkpoints_green_grid_dynamic_v1/..._best.pth` | Stronger reverse-scan behavior; representative metrics below. |
 | Interface memory | `multiscale_green_grid_interface_memory` | Adds memory correction to the interface state | `checkpoints_green_grid_interface_memory_v1/...pth` | Modest `C_C/C_D` gain, still not enough for `C_C_int`. |
 | Film-Abel interface | `multiscale_green_grid_film_abel` | Replaces black-box interface source with quasi-steady film transfer plus Abel memory | `checkpoints_film_abel_v1/..._best.pth` and current `.pth` | Large `C_C_int` and CV improvement. Full-field `C_C` becomes limited by spatial propagation. |
+| Film-Abel KernelMix | `multiscale_green_grid_film_abel_kernelmix` | Lets Abel and finite-memory kernels compete inside the interface prior | `runs_film_abel_kernelmix_256x64/<timestamp>/...` | Targets the reverse-scan `C_C_int` peak without starting from the EMA branch. |
 
 ## Representative Posterior Metrics
 
@@ -213,6 +214,19 @@ runs_film_abel_256x64_two_stage/<timestamp>/stage1_finished_snapshot/
 
 so a Stage 2 NaN does not obscure the completed Stage 1 checkpoint and log.
 The script uses `--abort-on-nan` and a smaller Stage 2 learning rate by default.
+
+### Film-Abel KernelMix warm start
+
+To test whether the Abel long-tail prior is causing the `C_C_int` reverse-scan
+peak, warm start from a Film-Abel checkpoint, not from EMA:
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!bash run_colab_film_abel_kernelmix_256x64.sh
+```
+
+This runs `multiscale_green_grid_film_abel_kernelmix` with `M=256`, `K=64`,
+`LR=2e-6`, and v4.2 FDM posterior comparison every 500 epochs by default.
 
 ## Posterior Evaluation
 
