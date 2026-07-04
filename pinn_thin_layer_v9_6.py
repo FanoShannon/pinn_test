@@ -96,6 +96,8 @@ MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_PATH = './pinn_thin_layer_ca
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSAL_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causal.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSAL_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causal_best.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALCONV_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causalconv.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALCONV_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causalconv_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema_best.pth'
 MODEL_V96_MULTISCALE_BUFFER_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_buffer.pth'
@@ -152,6 +154,9 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     elif arch == "multiscale_green_grid_film_abel_kernelmix_causal":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSAL_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSAL_BEST_PATH
+    elif arch == "multiscale_green_grid_film_abel_kernelmix_causalconv":
+        current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALCONV_PATH
+        best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALCONV_BEST_PATH
     elif arch == "multiscale_green_grid_film_abel_ema":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH
@@ -1183,6 +1188,16 @@ class InterfaceStateNet_v9_6_FilmAbelKernelMixCausal(InterfaceStateNet_v9_6_Film
         self.causal_jump_weight = 50.0
 
 
+class InterfaceStateNet_v9_6_FilmAbelKernelMixCausalConv(InterfaceStateNet_v9_6_FilmAbelKernelMixCausal):
+    """KernelMix interface marker for causal-convolution dynamic correction."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.causal_convolution_dynamic = True
+        self.causal_source_scale = 0.75
+        self.causal_jump_weight = 25.0
+
+
 class HISInterfaceStateNet_v9_6(nn.Module):
     """Minimal interface-state block for the HIS-PINN prototype.
 
@@ -2030,6 +2045,119 @@ class ExternalNet_v9_6_MultiscaleGreenGridDynamic(ExternalNet_v9_6_MultiscaleGre
         return C_C, C_D
 
 
+class ExternalNet_v9_6_MultiscaleGreenGridDynamicCausalConv(ExternalNet_v9_6_MultiscaleGreenGridDynamic):
+    """Dynamic correction as a causal heat-kernel convolution.
+
+    The direct dynamic residual can use the current scan state to paint a whole
+    external concentration field.  This ablation instead learns a scalar
+    correction source S_corr(t) and propagates it with the same Green kernel used
+    for physical flux history.  Endpoint subtraction keeps the correction from
+    changing the prescribed interface and far-field values directly.
+    """
+
+    def __init__(
+        self,
+        gamma_val,
+        interface_state=None,
+        normalize_inputs=True,
+        time_grid_points=256,
+        kernel_points=64,
+        history_grad=True,
+        cache_history=True,
+    ):
+        super().__init__(
+            gamma_val,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+            time_grid_points=time_grid_points,
+            kernel_points=kernel_points,
+            history_grad=history_grad,
+            cache_history=cache_history,
+        )
+        self.causal_convolution_dynamic = True
+        self.dynamic_source_net = MultiscaleResidualHead(out_features=1, width=160, depth=3, in_features=7)
+        nn.init.zeros_(self.dynamic_source_net.net[-1].weight)
+        nn.init.zeros_(self.dynamic_source_net.net[-1].bias)
+        self._dynamic_source_cache = None
+
+    def clear_step_cache(self):
+        super().clear_step_cache()
+        self._dynamic_source_cache = None
+
+    def _source_features(self, T_raw):
+        X_src = torch.ones_like(T_raw) * delta
+        r_src = torch.zeros_like(T_raw)
+        if self.normalize_inputs:
+            x_net = torch.cat([normalize_time(T_raw), normalize_ext_x(X_src)], dim=1)
+        else:
+            x_net = torch.cat([T_raw, X_src], dim=1)
+        state = self.interface_state(T_raw)
+        return self.dynamic_features(T_raw, X_src, r_src, x_net, state)
+
+    def _dynamic_source(self, T_raw):
+        raw = self.dynamic_source_net(self._source_features(T_raw))
+        scale = float(getattr(self.interface_state, "causal_source_scale", 0.75))
+        return scale * torch.tanh(raw)
+
+    def _dynamic_source_grid(self, T_ref):
+        use_cache = self.cache_history and self.training and torch.is_grad_enabled()
+        cache_key = (T_ref.device, T_ref.dtype, torch.is_grad_enabled())
+        if use_cache and self._dynamic_source_cache is not None and self._dynamic_source_cache[0] == cache_key:
+            return self._dynamic_source_cache[1]
+
+        t_grid = self.time_grid.to(device=T_ref.device, dtype=T_ref.dtype)
+        source_grid = self._dynamic_source(t_grid)
+        if use_cache:
+            self._dynamic_source_cache = (cache_key, source_grid)
+        return source_grid
+
+    def _causal_source_convolution(self, T_raw, X_raw, z):
+        t_pos = torch.clamp(T_raw, min=1e-6 * T_sim)
+        nodes = self.kernel_nodes.reshape(1, -1).to(device=T_raw.device, dtype=T_raw.dtype)
+        tau = t_pos * nodes
+        dt = torch.clamp(t_pos * (1.0 - nodes), min=1e-6 * T_sim)
+
+        source_grid = self._dynamic_source_grid(T_raw)
+        source_tau = self._interp_history(tau, source_grid)
+
+        ext_length = X_ext_max - delta
+        y = torch.clamp(X_raw - delta, 0.0, ext_length)
+        y_triplet = torch.cat([
+            y,
+            torch.zeros_like(y),
+            torch.ones_like(y) * ext_length,
+        ], dim=1)
+        y_mat = y_triplet.unsqueeze(-1).expand(-1, -1, self.kernel_points)
+        dt_mat = dt.unsqueeze(1)
+        source_mat = source_tau.unsqueeze(1)
+
+        kernel = torch.exp(-(y_mat ** 2) / (4.0 * D_rel_D * dt_mat))
+        kernel = kernel / torch.sqrt(torch.clamp(np.pi * D_rel_D * dt_mat, min=1e-12))
+        conv_all = T_raw.unsqueeze(1) * torch.mean(source_mat * kernel, dim=2, keepdim=True)
+        conv_all = conv_all.squeeze(-1)
+
+        conv_y = conv_all[:, 0:1]
+        conv_0 = conv_all[:, 1:2]
+        conv_far = conv_all[:, 2:3]
+
+        z2 = z * z
+        z3 = z2 * z
+        h00 = 2.0 * z3 - 3.0 * z2 + 1.0
+        h01 = -2.0 * z3 + 3.0 * z2
+        return conv_y - h00 * conv_0 - h01 * conv_far
+
+    def dynamic_correction(self, T_raw, X_raw, r, x_net, state):
+        if self.normalize_inputs:
+            t_net = normalize_time(T_raw)
+        else:
+            t_net = T_raw
+        beta = 0.5 + 12.0 * torch.sigmoid(self.beta_net(t_net))
+        exp_neg_beta = torch.exp(-beta)
+        denom = torch.clamp(1.0 - exp_neg_beta, min=1e-5)
+        z = torch.clamp((1.0 - torch.exp(-beta * r)) / denom, 0.0, 1.0)
+        return self._causal_source_convolution(T_raw, X_raw, z)
+
+
 class ExternalNet_v9_6_MultiscaleGreenGridMemory(ExternalNet_v9_6_MultiscaleGreenGridDynamic):
     """Dynamic Green-grid model with causal memory and coordinate-safe basis.
 
@@ -2678,6 +2806,24 @@ def create_models_v96(
                 cache_history=green_cache_history,
             ),
         )
+    if arch == "multiscale_green_grid_film_abel_kernelmix_causalconv":
+        interface_state = InterfaceStateNet_v9_6_FilmAbelKernelMixCausalConv(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        return (
+            ThinLayerNet_v9_6_MultiscaleHermite(interface_state=interface_state, normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6_MultiscaleGreenGridDynamicCausalConv(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
     if arch == "multiscale_green_grid_film_abel_ema":
         interface_state = InterfaceStateNet_v9_6_FilmAbelEMA(
             normalize_inputs=normalize_inputs,
@@ -3271,6 +3417,13 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                     f"alpha={float(interface_state.causal_gate_alpha):.3f}, "
                     f"t_floor={float(interface_state.causal_gate_time_floor):.4f}, "
                     f"dyn_jump_w={float(interface_state.causal_jump_weight):.1f}"
+                )
+            if getattr(model_ext, "causal_convolution_dynamic", False):
+                source_scale = float(getattr(model_ext.interface_state, "causal_source_scale", 0.75))
+                print(
+                    " 10c. Causal-convolution dynamic correction: "
+                    "S_corr(t) -> int S_corr(tau)*K(y,t-tau) dtau; "
+                    f"source_scale={source_scale:.3f}"
                 )
         if getattr(model_ext, "memory_multibasis", False):
             print(
@@ -4170,7 +4323,7 @@ if __name__ == "__main__":
                         help="Use raw coordinates for old v9.6 checkpoints.")
     parser.add_argument("--cv-points", type=int, default=8000)
     parser.add_argument("--fdm-csv", default="../FDM/kcat1_v42_cv_data_v42.csv")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256,
                         help="Global history time-grid size for multiscale_green_grid.")
     parser.add_argument("--green-kernel-points", type=int, default=32,

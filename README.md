@@ -29,6 +29,7 @@ Main code files:
 | Film-Abel interface | `multiscale_green_grid_film_abel` | Replaces black-box interface source with quasi-steady film transfer plus Abel memory | `checkpoints_film_abel_v1/..._best.pth` and current `.pth` | Large `C_C_int` and CV improvement. Full-field `C_C` becomes limited by spatial propagation. |
 | Film-Abel KernelMix | `multiscale_green_grid_film_abel_kernelmix` | Lets Abel and finite-memory kernels compete inside the interface prior | `runs_film_abel_kernelmix_256x64/<timestamp>/...` | Targets the reverse-scan `C_C_int` peak without starting from the EMA branch. |
 | KernelMix causal | `multiscale_green_grid_film_abel_kernelmix_causal` | Multiplies the dynamic external correction by a diffusion reachability gate | `runs_film_abel_kernelmix_causal_256x64/<timestamp>/...` | Tests whether the pre-reversal far-field blue residual is caused by anti-causal dynamic correction. |
+| KernelMix causal-conv | `multiscale_green_grid_film_abel_kernelmix_causalconv` | Replaces direct dynamic field correction with a learned source convolved through the heat kernel | `runs_film_abel_kernelmix_causalconv_256x64/<timestamp>/...` | Tests whether the reversal band is caused by dynamic correction changing too sharply in time. |
 
 ## Representative Posterior Metrics
 
@@ -50,10 +51,11 @@ Current v4.2 posterior checkpoints:
 | `film_abel_ema_500ep_best` | 0.9821 | 0.1428 | 0.9971 | 0.0768 | 0.9983 | 0.1080 |
 | `film_abel_kernelmix_latest` | 0.9765 | 0.1638 | 0.9973 | 0.0735 | 0.9983 | 0.1239 |
 | `kernelmix_causal_preview_no_retrain` | 0.9961 | 0.0671 | 0.9973 | 0.0735 | 0.9983 | 0.0507 |
+| `kernelmix_causalconv_preview_no_retrain` | 0.9949 | 0.0763 | 0.9973 | 0.0735 | 0.9983 | 0.0577 |
 
-`kernelmix_causal_preview_no_retrain` uses the existing KernelMix checkpoint
-with the causal dynamic gate applied at evaluation time.  It is a direction
-check, not a completed training run.
+The `*_preview_no_retrain` rows use the existing KernelMix checkpoint with the
+new correction structure applied at evaluation time.  They are direction checks,
+not completed training runs.
 
 Historical v4.1 posterior checkpoints:
 
@@ -255,6 +257,34 @@ g(y,t) = exp(-y^2 / (4*D*t*alpha))
 
 The intent is to stop the residual correction from adding `C_D` at far external
 positions before diffusion from the interface can plausibly reach them.
+
+### Film-Abel KernelMix causal-convolution warm start
+
+To replace the direct dynamic external correction by a causal source history,
+run:
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!bash run_colab_film_abel_kernelmix_causalconv_256x64.sh
+```
+
+This runs `multiscale_green_grid_film_abel_kernelmix_causalconv`.  It keeps the
+Film-Abel/KernelMix interface chain, but changes the dynamic correction from a
+direct field
+
+```text
+NN_corr(x,t,theta,dtheta,J,dJ,Q)
+```
+
+to a scalar source propagated by the heat kernel:
+
+```text
+C_corr(y,t) = int_0^t S_corr(tau) K(y,t-tau) dtau
+```
+
+with endpoint subtraction so it does not directly overwrite the interface or
+far-field values.  This is the stricter follow-up after the causal gate: it
+targets the remaining reversal-line discontinuity-like band.
 
 ## Posterior Evaluation
 
