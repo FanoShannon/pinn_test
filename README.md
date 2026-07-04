@@ -28,6 +28,7 @@ Main code files:
 | Interface memory | `multiscale_green_grid_interface_memory` | Adds memory correction to the interface state | `checkpoints_green_grid_interface_memory_v1/...pth` | Modest `C_C/C_D` gain, still not enough for `C_C_int`. |
 | Film-Abel interface | `multiscale_green_grid_film_abel` | Replaces black-box interface source with quasi-steady film transfer plus Abel memory | `checkpoints_film_abel_v1/..._best.pth` and current `.pth` | Large `C_C_int` and CV improvement. Full-field `C_C` becomes limited by spatial propagation. |
 | Film-Abel KernelMix | `multiscale_green_grid_film_abel_kernelmix` | Lets Abel and finite-memory kernels compete inside the interface prior | `runs_film_abel_kernelmix_256x64/<timestamp>/...` | Targets the reverse-scan `C_C_int` peak without starting from the EMA branch. |
+| KernelMix causal | `multiscale_green_grid_film_abel_kernelmix_causal` | Multiplies the dynamic external correction by a diffusion reachability gate | `runs_film_abel_kernelmix_causal_256x64/<timestamp>/...` | Tests whether the pre-reversal far-field blue residual is caused by anti-causal dynamic correction. |
 
 ## Representative Posterior Metrics
 
@@ -47,6 +48,12 @@ Current v4.2 posterior checkpoints:
 |---|---:|---:|---:|---:|---:|---:|
 | `film_abel_256x64_best` | 0.9813 | 0.1462 | 0.9976 | 0.0697 | 0.9983 | 0.1105 |
 | `film_abel_ema_500ep_best` | 0.9821 | 0.1428 | 0.9971 | 0.0768 | 0.9983 | 0.1080 |
+| `film_abel_kernelmix_latest` | 0.9765 | 0.1638 | 0.9973 | 0.0735 | 0.9983 | 0.1239 |
+| `kernelmix_causal_preview_no_retrain` | 0.9961 | 0.0671 | 0.9973 | 0.0735 | 0.9983 | 0.0507 |
+
+`kernelmix_causal_preview_no_retrain` uses the existing KernelMix checkpoint
+with the causal dynamic gate applied at evaluation time.  It is a direction
+check, not a completed training run.
 
 Historical v4.1 posterior checkpoints:
 
@@ -227,6 +234,27 @@ peak, warm start from a Film-Abel checkpoint, not from EMA:
 
 This runs `multiscale_green_grid_film_abel_kernelmix` with `M=256`, `K=64`,
 `LR=2e-6`, and v4.2 FDM posterior comparison every 500 epochs by default.
+
+### Film-Abel KernelMix causal warm start
+
+To test the diffusion-causality fix for the pre-reversal far-field blue
+residual, run:
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!bash run_colab_film_abel_kernelmix_causal_256x64.sh
+```
+
+This runs `multiscale_green_grid_film_abel_kernelmix_causal`.  It keeps the
+Film-Abel/KernelMix interface chain but gates only the dynamic external
+correction:
+
+```text
+g(y,t) = exp(-y^2 / (4*D*t*alpha))
+```
+
+The intent is to stop the residual correction from adding `C_D` at far external
+positions before diffusion from the interface can plausibly reach them.
 
 ## Posterior Evaluation
 

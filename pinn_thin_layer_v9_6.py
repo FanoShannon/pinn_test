@@ -94,6 +94,8 @@ MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_PATH = './pinn_thin_layer_catalytic_v9
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_best.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSAL_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causal.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSAL_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causal_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema_best.pth'
 MODEL_V96_MULTISCALE_BUFFER_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_buffer.pth'
@@ -147,6 +149,9 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     elif arch == "multiscale_green_grid_film_abel_kernelmix":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_BEST_PATH
+    elif arch == "multiscale_green_grid_film_abel_kernelmix_causal":
+        current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSAL_PATH
+        best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSAL_BEST_PATH
     elif arch == "multiscale_green_grid_film_abel_ema":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH
@@ -1161,6 +1166,23 @@ class InterfaceStateNet_v9_6_FilmAbelKernelMix(InterfaceStateNet_v9_6_FilmAbel):
         return history
 
 
+class InterfaceStateNet_v9_6_FilmAbelKernelMixCausal(InterfaceStateNet_v9_6_FilmAbelKernelMix):
+    """KernelMix interface with a diffusion-causal external correction gate.
+
+    Green/Abel/base terms already propagate interface flux causally.  This
+    marker asks the external dynamic correction to obey the same boundary-origin
+    diffusion reachability, so it cannot paint a large far-field correction
+    before diffusion can carry interface information there.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.causal_dynamic_correction = True
+        self.causal_gate_alpha = 2.0
+        self.causal_gate_time_floor = 0.005 * T_sim
+        self.causal_jump_weight = 50.0
+
+
 class HISInterfaceStateNet_v9_6(nn.Module):
     """Minimal interface-state block for the HIS-PINN prototype.
 
@@ -1930,13 +1952,27 @@ class ExternalNet_v9_6_MultiscaleGreenGridDynamic(ExternalNet_v9_6_MultiscaleGre
             window * shifted_p4,
         ], dim=1)
 
+    def diffusion_causal_gate(self, T_raw, X_raw):
+        if not getattr(self.interface_state, "causal_dynamic_correction", False):
+            return torch.ones_like(T_raw)
+
+        ext_length = X_ext_max - delta
+        y = torch.clamp(X_raw - delta, 0.0, ext_length)
+        alpha = max(float(getattr(self.interface_state, "causal_gate_alpha", 2.0)), 1e-6)
+        t_floor = max(float(getattr(self.interface_state, "causal_gate_time_floor", 0.005 * T_sim)), 1e-8)
+        t_eff = torch.clamp(T_raw, min=t_floor)
+        denom = max(4.0 * float(D_rel_D) * alpha, 1e-8) * t_eff
+        exponent = -(y ** 2) / denom
+        return torch.exp(torch.clamp(exponent, min=-60.0, max=0.0))
+
     def dynamic_correction(self, T_raw, X_raw, r, x_net, state):
         dynamic_input = self.dynamic_features(T_raw, X_raw, r, x_net, state)
         raw = self.dynamic_net(dynamic_input)
         modes = self.dynamic_modes(r)
         time_gate = torch.clamp(T_raw / T_sim, 0.0, 1.0)
         scales = self.dynamic_correction_scales.to(device=raw.device, dtype=raw.dtype)
-        return time_gate * torch.sum(scales * modes * torch.tanh(raw), dim=1, keepdim=True)
+        correction = time_gate * torch.sum(scales * modes * torch.tanh(raw), dim=1, keepdim=True)
+        return correction * self.diffusion_causal_gate(T_raw, X_raw)
 
     def forward(self, x_input):
         T_raw = x_input[:, 0:1]
@@ -2624,6 +2660,24 @@ def create_models_v96(
                 cache_history=green_cache_history,
             ),
         )
+    if arch == "multiscale_green_grid_film_abel_kernelmix_causal":
+        interface_state = InterfaceStateNet_v9_6_FilmAbelKernelMixCausal(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        return (
+            ThinLayerNet_v9_6_MultiscaleHermite(interface_state=interface_state, normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6_MultiscaleGreenGridDynamic(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
     if arch == "multiscale_green_grid_film_abel_ema":
         interface_state = InterfaceStateNet_v9_6_FilmAbelEMA(
             normalize_inputs=normalize_inputs,
@@ -2786,7 +2840,7 @@ def normalize_loss_history(loss_history):
         return loss_history
 
     total_len = len(loss_history.get('total', []))
-    for key in ('interface_thin', 'interface_ext', 'bounds'):
+    for key in ('interface_thin', 'interface_ext', 'bounds', 'reversal_continuity', 'dynamic_reversal_jump'):
         values = list(loss_history.get(key, []))
         if len(values) < total_len:
             values = [float('nan')] * (total_len - len(values)) + values
@@ -3131,8 +3185,9 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     loss_history = {
         'total': [], 'pde_thin': [], 'pde_ext': [], 'surface': [],
         'farfield': [], 'initial': [], 'bounds': [], 'interface': [],
-        'interface_thin': [], 'interface_ext': [], 'lr': [],
-        'nernst_err': [], 'surface_state': [], 'physics_score': []
+        'interface_thin': [], 'interface_ext': [], 'reversal_continuity': [],
+        'dynamic_reversal_jump': [], 'lr': [], 'nernst_err': [],
+        'surface_state': [], 'physics_score': []
     }
 
     best_score = float('inf')
@@ -3208,6 +3263,15 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 "x,t,theta,dtheta_dt,J_rxn,dJ_rxn_dt,Q_rxn; "
                 f"scales={model_ext.dynamic_correction_scales.detach().cpu().numpy().reshape(-1).tolist()}"
             )
+            if getattr(getattr(model_ext, "interface_state", None), "causal_dynamic_correction", False):
+                interface_state = model_ext.interface_state
+                print(
+                    " 10b. Diffusion-causal dynamic gate: "
+                    "g=exp(-y^2/(4*D*t*alpha)); "
+                    f"alpha={float(interface_state.causal_gate_alpha):.3f}, "
+                    f"t_floor={float(interface_state.causal_gate_time_floor):.4f}, "
+                    f"dyn_jump_w={float(interface_state.causal_jump_weight):.1f}"
+                )
         if getattr(model_ext, "memory_multibasis", False):
             print(
                 " 11. Memory/local-basis correction: "
@@ -3415,6 +3479,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         loss_interface = loss_interface_thin + loss_interface_ext
 
         loss_reversal_continuity = torch.zeros((), device=device)
+        loss_dynamic_reversal_jump = torch.zeros((), device=device)
         if getattr(interface_state, "continuous_time_features", False):
             n_continuity = min(1024, max(128, n_points // 4))
             X_cont = sample_external_x(n_continuity, device)
@@ -3427,6 +3492,21 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 (C_C_plus - C_C_minus) ** 2 +
                 (C_D_plus - C_D_minus) ** 2
             )
+            if getattr(interface_state, "causal_dynamic_correction", False):
+                ext_length = X_ext_max - delta
+                y_cont = torch.clamp(X_cont - delta, 0.0, ext_length)
+                r_cont = torch.clamp(y_cont / ext_length, 0.0, 1.0)
+                if model_ext.normalize_inputs:
+                    x_minus = torch.cat([normalize_time(T_minus), normalize_ext_x(X_cont)], dim=1)
+                    x_plus = torch.cat([normalize_time(T_plus), normalize_ext_x(X_cont)], dim=1)
+                else:
+                    x_minus = torch.cat([T_minus, X_cont], dim=1)
+                    x_plus = torch.cat([T_plus, X_cont], dim=1)
+                state_minus = interface_state(T_minus)
+                state_plus = interface_state(T_plus)
+                dyn_minus = model_ext.dynamic_correction(T_minus, X_cont, r_cont, x_minus, state_minus)
+                dyn_plus = model_ext.dynamic_correction(T_plus, X_cont, r_cont, x_plus, state_plus)
+                loss_dynamic_reversal_jump = torch.mean((dyn_plus - dyn_minus) ** 2)
 
         # ========== 4. Weight adjustment ==========
         if epoch < start_epoch + 3000:
@@ -3447,6 +3527,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             'interface_thin': thin_interface_weight,
             'interface_ext': ext_interface_weight,
             'reversal_continuity': 100.0,
+            'dynamic_reversal_jump': float(getattr(interface_state, "causal_jump_weight", 0.0)),
         }
 
         # 3.7 Total loss
@@ -3459,7 +3540,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             base_weights['bounds'] * loss_bounds +
             base_weights['interface_thin'] * loss_interface_thin +
             base_weights['interface_ext'] * loss_interface_ext +
-            base_weights['reversal_continuity'] * loss_reversal_continuity
+            base_weights['reversal_continuity'] * loss_reversal_continuity +
+            base_weights['dynamic_reversal_jump'] * loss_dynamic_reversal_jump
         )
         physics_score = (
             pde_thin_weight * loss_pde_thin +
@@ -3470,7 +3552,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             bounds_weight * loss_bounds +
             thin_interface_weight * loss_interface_thin +
             ext_interface_weight * loss_interface_ext +
-            base_weights['reversal_continuity'] * loss_reversal_continuity
+            base_weights['reversal_continuity'] * loss_reversal_continuity +
+            base_weights['dynamic_reversal_jump'] * loss_dynamic_reversal_jump
         )
 
         # ========== 5. Optimization ==========
@@ -3519,6 +3602,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         loss_history['interface'].append(loss_interface.item())
         loss_history.setdefault('interface_thin', []).append(loss_interface_thin.item())
         loss_history.setdefault('interface_ext', []).append(loss_interface_ext.item())
+        loss_history.setdefault('reversal_continuity', []).append(loss_reversal_continuity.item())
+        loss_history.setdefault('dynamic_reversal_jump', []).append(loss_dynamic_reversal_jump.item())
         loss_history['lr'].append(optimizer.param_groups[0]['lr'])
         loss_history['nernst_err'].append(nernst_err)
         loss_history['surface_state'].append(loss_surface_state.item())
@@ -3550,6 +3635,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 f"({step_count}/{n_epochs}) | loss={total_loss.item():.3e} "
                 f"pde=({loss_pde_thin.item():.2e},{loss_pde_ext.item():.2e}) "
                 f"iface=({loss_interface_thin.item():.2e},{loss_interface_ext.item():.2e}) "
+                f"rev={loss_reversal_continuity.item():.2e} "
+                f"dynjump={loss_dynamic_reversal_jump.item():.2e} "
                 f"| {sec_per_epoch:.2f}s/epoch | last {progress_every}={interval_sec:.1f}s "
                 f"| ETA={eta_sec/60.0:.1f}min{gpu_msg}{phase_msg}",
                 flush=True,
@@ -3618,6 +3705,12 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 f"  Interface: {loss_interface.item():.4e} "
                 f"(thin={loss_interface_thin.item():.4e}, ext={loss_interface_ext.item():.4e}; "
                 f"w={base_weights['interface_thin']:.1f}/{base_weights['interface_ext']:.1f})"
+            )
+            print(
+                f"  Reversal continuity: {loss_reversal_continuity.item():.4e} "
+                f"(w={base_weights['reversal_continuity']:.1f}); "
+                f"dynamic jump: {loss_dynamic_reversal_jump.item():.4e} "
+                f"(w={base_weights['dynamic_reversal_jump']:.1f})"
             )
             print(f"  Hard: A+B={err_AB:.2e}, C+D={err_CD:.2e}")
             print(f"  Nernst={nernst_err_test:.2e} | J_rxn={J_rxn_test:.4e}")
@@ -3735,6 +3828,10 @@ def predict_and_visualize_v9_6(model_thin, model_ext, loss_history, gamma, n_cv=
         ax2.semilogy(epochs, loss_history['interface_thin'], color='#7B3294', alpha=0.6, label='Interface thin')
     if len(loss_history.get('interface_ext', [])) == len(loss_history['total']):
         ax2.semilogy(epochs, loss_history['interface_ext'], color='#008837', alpha=0.6, label='Interface ext')
+    if len(loss_history.get('reversal_continuity', [])) == len(loss_history['total']):
+        ax2.semilogy(epochs, loss_history['reversal_continuity'], color='#E66101', alpha=0.6, label='Reversal cont.')
+    if len(loss_history.get('dynamic_reversal_jump', [])) == len(loss_history['total']):
+        ax2.semilogy(epochs, loss_history['dynamic_reversal_jump'], color='#5E3C99', alpha=0.6, label='Dynamic jump')
     ax2.set_xlabel('Epoch')
     ax2.set_ylabel('Loss')
     ax2.set_title('Loss Components')
@@ -4073,7 +4170,7 @@ if __name__ == "__main__":
                         help="Use raw coordinates for old v9.6 checkpoints.")
     parser.add_argument("--cv-points", type=int, default=8000)
     parser.add_argument("--fdm-csv", default="../FDM/kcat1_v42_cv_data_v42.csv")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256,
                         help="Global history time-grid size for multiscale_green_grid.")
     parser.add_argument("--green-kernel-points", type=int, default=32,
@@ -4179,8 +4276,9 @@ if __name__ == "__main__":
             loss_history = {
                 'total': [], 'pde_thin': [], 'pde_ext': [], 'surface': [],
                 'farfield': [], 'initial': [], 'bounds': [], 'interface': [],
-                'interface_thin': [], 'interface_ext': [], 'lr': [],
-                'nernst_err': [], 'surface_state': [], 'physics_score': []
+                'interface_thin': [], 'interface_ext': [], 'reversal_continuity': [],
+                'dynamic_reversal_jump': [], 'lr': [], 'nernst_err': [],
+                'surface_state': [], 'physics_score': []
             }
         print(f"\nEvaluating checkpoint: {args.checkpoint}")
         validate_model(model_thin, model_ext, device, loaded_epoch, verbose=True)
