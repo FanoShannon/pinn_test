@@ -686,9 +686,12 @@ class InterfaceStateNet_v9_6_FilmAbel(nn.Module):
     def _phase_shift(self):
         return 0.03 * T_sim * torch.tanh(self.phase_shift_raw)
 
+    def _feature_theta_dot(self, T_raw):
+        return potential_theta_dot(T_raw)
+
     def _surface_state(self, T_raw):
         theta = potential_theta(T_raw)
-        theta_dot = potential_theta_dot(T_raw)
+        theta_dot = self._feature_theta_dot(T_raw)
         c_b_surface = torch.sigmoid(-theta)
         dc_b_surface_dt = -c_b_surface * (1.0 - c_b_surface) * theta_dot
         return theta, theta_dot, c_b_surface, dc_b_surface_dt
@@ -977,6 +980,10 @@ class InterfaceStateNet_v9_6_FilmAbelKernelMix(InterfaceStateNet_v9_6_FilmAbel):
         nn.init.zeros_(self.dynamic_phase_net.net[-1].weight)
         nn.init.zeros_(self.dynamic_phase_net.net[-1].bias)
         self.dynamic_phase_scale = 0.025 * T_sim
+        self.continuous_time_features = True
+
+    def _feature_theta_dot(self, T_raw):
+        return potential_theta_dot_smooth(T_raw)
 
     def _kernelmix_alpha(self):
         return 1.0 + 0.20 * torch.tanh(self.kernelmix_alpha_raw)
@@ -1879,7 +1886,10 @@ class ExternalNet_v9_6_MultiscaleGreenGridDynamic(ExternalNet_v9_6_MultiscaleGre
 
     def dynamic_features(self, T_raw, X_raw, r, x_net, state):
         theta = potential_theta(T_raw)
-        theta_dot = potential_theta_dot(T_raw)
+        if getattr(self.interface_state, "continuous_time_features", False):
+            theta_dot = potential_theta_dot_smooth(T_raw)
+        else:
+            theta_dot = potential_theta_dot(T_raw)
         j_rxn = state["J_rxn"]
         if "dJ_rxn_dt" in state:
             dj_dt = state["dJ_rxn_dt"]
@@ -2659,6 +2669,20 @@ def potential_theta_dot(T):
     return torch.where(T <= T_switch * T_sim, down, up)
 
 
+def potential_theta_dot_smooth(T, width=0.015):
+    """Continuous scan-direction feature for neural correction heads.
+
+    The physical triangular potential is continuous while its derivative jumps
+    at reversal.  Concentrations should remain continuous, so correction
+    networks should not receive a step input that lets them create a state jump.
+    This smoothed derivative is used only as a neural feature; theta(t) itself
+    and the physical scan reversal remain unchanged.
+    """
+    slope = 2.0 * (theta_i - theta_switch) / T_sim
+    width_t = max(float(width) * float(T_sim), 1e-6)
+    return slope * torch.tanh((T - T_switch * T_sim) / width_t)
+
+
 # ==================== 模型保存/加载 ====================
 def save_model_v96(model_thin, model_ext, optimizer, scheduler, epoch, path, 
                    loss_history=None, best_val_loss=None, suffix=''):
@@ -3390,6 +3414,20 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         loss_interface_ext = torch.mean(flux_C_res**2) + torch.mean(flux_D_res**2)
         loss_interface = loss_interface_thin + loss_interface_ext
 
+        loss_reversal_continuity = torch.zeros((), device=device)
+        if getattr(interface_state, "continuous_time_features", False):
+            n_continuity = min(1024, max(128, n_points // 4))
+            X_cont = sample_external_x(n_continuity, device)
+            eps_t = 0.0025 * T_sim
+            T_minus = torch.ones_like(X_cont) * (T_switch * T_sim - eps_t)
+            T_plus = torch.ones_like(X_cont) * (T_switch * T_sim + eps_t)
+            C_C_minus, C_D_minus = model_ext(torch.cat([T_minus, X_cont], dim=1))
+            C_C_plus, C_D_plus = model_ext(torch.cat([T_plus, X_cont], dim=1))
+            loss_reversal_continuity = torch.mean(
+                (C_C_plus - C_C_minus) ** 2 +
+                (C_D_plus - C_D_minus) ** 2
+            )
+
         # ========== 4. Weight adjustment ==========
         if epoch < start_epoch + 3000:
             surface_weight = 20.0 * np.exp((epoch - start_epoch) / 3000)
@@ -3408,6 +3446,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             'bounds': bounds_weight,
             'interface_thin': thin_interface_weight,
             'interface_ext': ext_interface_weight,
+            'reversal_continuity': 100.0,
         }
 
         # 3.7 Total loss
@@ -3419,7 +3458,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             base_weights['initial'] * loss_initial +
             base_weights['bounds'] * loss_bounds +
             base_weights['interface_thin'] * loss_interface_thin +
-            base_weights['interface_ext'] * loss_interface_ext
+            base_weights['interface_ext'] * loss_interface_ext +
+            base_weights['reversal_continuity'] * loss_reversal_continuity
         )
         physics_score = (
             pde_thin_weight * loss_pde_thin +
@@ -3429,7 +3469,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             initial_weight * loss_initial +
             bounds_weight * loss_bounds +
             thin_interface_weight * loss_interface_thin +
-            ext_interface_weight * loss_interface_ext
+            ext_interface_weight * loss_interface_ext +
+            base_weights['reversal_continuity'] * loss_reversal_continuity
         )
 
         # ========== 5. Optimization ==========
