@@ -2569,15 +2569,18 @@ class ExternalNet_v9_6_MultiscaleGreenGridFilmTrace(ExternalNet_v9_6_MultiscaleG
         scales = self.tracegreen_residual_scales.to(device=raw.device, dtype=raw.dtype)
         return time_gate * torch.sum(scales * modes * torch.tanh(raw), dim=1, keepdim=True)
 
-    def forward(self, x_input):
-        T_raw = x_input[:, 0:1]
-        X_raw = x_input[:, 1:2]
+    def _x_net_and_z(self, T_raw, X_raw):
         if self.normalize_inputs:
             x_net = torch.cat([normalize_time(T_raw), normalize_ext_x(X_raw)], dim=1)
         else:
-            x_net = x_input
-
+            x_net = torch.cat([T_raw, X_raw], dim=1)
         y, _, z, _ = self.tracegreen_coordinate(T_raw, X_raw)
+        return x_net, y, z
+
+    def tracegreen_lift_and_residual(self, x_input):
+        T_raw = x_input[:, 0:1]
+        X_raw = x_input[:, 1:2]
+        x_net, y, z = self._x_net_and_z(T_raw, X_raw)
         c_d_all = self.trace_boundary_convolution_fused(T_raw, y)
         c_d_trace = c_d_all[:, 0:1]
         c_d_far = c_d_all[:, 2:3]
@@ -2588,7 +2591,23 @@ class ExternalNet_v9_6_MultiscaleGreenGridFilmTrace(ExternalNet_v9_6_MultiscaleG
 
         c_d_base = c_d_trace + h01 * (torch.zeros_like(c_d_far) - c_d_far)
         residual = self.tracegreen_residual_correction(T_raw, z, x_net)
+        return c_d_base, residual
 
+    def pde_fields(self, x_input):
+        """Return only the smooth correction for PDE residual training.
+
+        The HeatDirichlet lift contains the endpoint-singular Green kernel and
+        is treated as an analytic solution component.  Autograd PDE residuals
+        should therefore act on the smooth neural correction, not on the lift.
+        """
+        T_raw = x_input[:, 0:1]
+        X_raw = x_input[:, 1:2]
+        x_net, _, z = self._x_net_and_z(T_raw, X_raw)
+        residual = self.tracegreen_residual_correction(T_raw, z, x_net)
+        return -residual, residual
+
+    def forward(self, x_input):
+        c_d_base, residual = self.tracegreen_lift_and_residual(x_input)
         C_D = c_d_base + residual
         C_C = self.gamma - C_D
         return C_C, C_D
@@ -4044,7 +4063,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             print(
                 " 16. Film-Abel TraceGreen external field: "
                 "C_D=HeatDirichlet[C_D_int^film](x,t)+h01*(0-D_far)+R_smooth; "
-                "single Film-Abel boundary trace, no G_flux(0)-Film trace sewing; "
+                "single Film-Abel boundary trace, PDE loss acts only on R_smooth; "
                 f"far_beta={beta:.3f}, residual_scales={scales}"
             )
     print(f"{'='*80}")
@@ -4100,18 +4119,22 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         # 3.2 External PDE
         inputs_ext = torch.cat([T_ext, X_ext], dim=1)
         C_C, C_D = model_ext(inputs_ext)
+        if hasattr(model_ext, "pde_fields"):
+            C_C_pde, C_D_pde = model_ext.pde_fields(inputs_ext)
+        else:
+            C_C_pde, C_D_pde = C_C, C_D
 
         if is_flux_state:
-            C_D_T = torch.autograd.grad(C_D.sum(), T_ext, create_graph=True)[0]
-            C_D_X = torch.autograd.grad(C_D.sum(), X_ext, create_graph=True)[0]
+            C_D_T = torch.autograd.grad(C_D_pde.sum(), T_ext, create_graph=True)[0]
+            C_D_X = torch.autograd.grad(C_D_pde.sum(), X_ext, create_graph=True)[0]
             J_D_ext = model_ext.flux_d(inputs_ext)
             J_D_X = torch.autograd.grad(J_D_ext.sum(), X_ext, create_graph=True)[0]
             loss_ext_conservation = torch.mean((C_D_T + J_D_X)**2)
             loss_ext_constitutive = torch.mean((J_D_ext + D_rel_D * C_D_X)**2)
             loss_pde_ext = loss_ext_conservation + 2.0 * loss_ext_constitutive
         else:
-            C_C_T = torch.autograd.grad(C_C.sum(), T_ext, create_graph=True)[0]
-            C_C_X = torch.autograd.grad(C_C.sum(), X_ext, create_graph=True)[0]
+            C_C_T = torch.autograd.grad(C_C_pde.sum(), T_ext, create_graph=True)[0]
+            C_C_X = torch.autograd.grad(C_C_pde.sum(), X_ext, create_graph=True)[0]
             C_C_XX = torch.autograd.grad(C_C_X.sum(), X_ext, create_graph=True)[0]
 
             loss_pde_ext = torch.mean((C_C_T - D_rel_C * C_C_XX)**2)
