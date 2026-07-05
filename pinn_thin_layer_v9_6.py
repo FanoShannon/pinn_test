@@ -98,6 +98,14 @@ MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSAL_PATH = './pinn_thin_l
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSAL_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causal_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALCONV_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causalconv.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALCONV_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causalconv_best.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALHYBRID_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causalhybrid.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALHYBRID_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causalhybrid_best.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALHYBRID_SMOOTH_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALHYBRID_SMOOTH_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth_best.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALHYBRID_INTMEMORY_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALHYBRID_INTMEMORY_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory_best.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_FLUXTRACE_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_fluxtrace.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_FLUXTRACE_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_fluxtrace_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema_best.pth'
 MODEL_V96_MULTISCALE_BUFFER_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_buffer.pth'
@@ -157,6 +165,18 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     elif arch == "multiscale_green_grid_film_abel_kernelmix_causalconv":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALCONV_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALCONV_BEST_PATH
+    elif arch == "multiscale_green_grid_film_abel_kernelmix_causalhybrid":
+        current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALHYBRID_PATH
+        best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALHYBRID_BEST_PATH
+    elif arch == "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth":
+        current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALHYBRID_SMOOTH_PATH
+        best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALHYBRID_SMOOTH_BEST_PATH
+    elif arch == "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory":
+        current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALHYBRID_INTMEMORY_PATH
+        best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALHYBRID_INTMEMORY_BEST_PATH
+    elif arch == "multiscale_green_grid_film_abel_kernelmix_fluxtrace":
+        current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_FLUXTRACE_PATH
+        best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_FLUXTRACE_BEST_PATH
     elif arch == "multiscale_green_grid_film_abel_ema":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH
@@ -1198,6 +1218,113 @@ class InterfaceStateNet_v9_6_FilmAbelKernelMixCausalConv(InterfaceStateNet_v9_6_
         self.causal_jump_weight = 25.0
 
 
+class InterfaceStateNet_v9_6_FilmAbelKernelMixCausalHybrid(InterfaceStateNet_v9_6_FilmAbelKernelMixCausalConv):
+    """Marker for causal source convolution plus a small gated direct residual."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.causal_hybrid_dynamic = True
+        self.causal_direct_scale = 0.25
+        self.causal_source_scale = 0.65
+        self.causal_jump_weight = 35.0
+
+
+class InterfaceStateNet_v9_6_FilmAbelKernelMixCausalHybridSmooth(InterfaceStateNet_v9_6_FilmAbelKernelMixCausalHybrid):
+    """Causal-hybrid marker with explicit smoothness regularization.
+
+    Diagnostics showed the small direct dynamic residual can still switch
+    sharply at the scan reversal.  This ablation keeps the causal-convolution
+    branch as the main external correction, reduces the direct branch, and asks
+    the training loop to penalize direct/static/phase temporal roughness.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.causal_hybrid_smooth = True
+        self.causal_direct_scale = 0.05
+        self.causal_source_scale = 0.70
+        self.causal_jump_weight = 20.0
+        self.direct_jump_weight = 1500.0
+        self.direct_smooth_weight = 250.0
+        self.static_smooth_weight = 60.0
+        self.phase_smooth_weight = 25.0
+        self.smooth_time_window = 0.08 * T_sim
+
+
+class InterfaceStateNet_v9_6_FilmAbelKernelMixCausalHybridIntMemory(
+    InterfaceStateNet_v9_6_FilmAbelKernelMixCausalHybridSmooth
+):
+    """Interface-memory v2 for C_C_int-dominated residuals.
+
+    The smooth causal-hybrid branch fixed much of the external-field time jump,
+    but posterior decomposition showed that C_C_int still inherits a biased Abel
+    long-memory prior and a free logit residual that can drift after reversal.
+
+    This branch keeps the same causal external field, but changes the interface
+    state in two narrow ways:
+      1. finite-memory kernels contribute positively to C_D_prior with fresh
+         parameters, so old warm-start beta values near zero cannot lock them out;
+      2. the residual correction is additive in concentration units, followed by
+         a clamp for bounds, instead of being the primary logit/sigmoid pathway.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.interface_memory_v2 = True
+
+        # The old residual_net may be loaded from a warm-start checkpoint.  It is
+        # intentionally bypassed because decomposition showed it can push C_C_int
+        # in the wrong direction after reversal.
+        for param in self.residual_net.parameters():
+            param.requires_grad_(False)
+
+        self.interface_residual_net_v2 = MultiscaleResidualHead(
+            out_features=1,
+            width=96,
+            depth=2,
+            in_features=13,
+        )
+        nn.init.zeros_(self.interface_residual_net_v2.net[-1].weight)
+        nn.init.zeros_(self.interface_residual_net_v2.net[-1].bias)
+
+        # Fresh positive finite-memory gains.  Initial value is about 0.04 per
+        # memory scale, enough to counter the observed Abel under-production of
+        # C_D_int without making a large discontinuous architecture jump.
+        self.intmemory_finite_gain_raw = nn.Parameter(torch.full((4,), -2.2, dtype=torch.float32))
+        self.intmemory_finite_gain_scale = 0.40
+
+        # Additive C_D correction bound.  The scale starts near 0.13 concentration
+        # units and is learned, while the zero-initialized head starts neutral.
+        self.intmemory_corr_scale_raw = nn.Parameter(torch.tensor([-0.5], dtype=torch.float32))
+        self.intmemory_corr_scale = 0.35
+
+        self.cint_reversal_jump_weight = 800.0
+        self.cint_temporal_smooth_weight = 120.0
+        self.phase_smooth_weight = 40.0
+
+    def _intmemory_finite_gain(self):
+        raw = self.intmemory_finite_gain_raw.reshape(1, -1)
+        return self.intmemory_finite_gain_scale * torch.sigmoid(raw)
+
+    def _intmemory_corr_amplitude(self):
+        return self.intmemory_corr_scale * torch.sigmoid(self.intmemory_corr_scale_raw)
+
+    def _kernelmix_prior(self, abel_prior, finite_terms):
+        prior = super()._kernelmix_prior(abel_prior, finite_terms)
+        gain = self._intmemory_finite_gain().to(device=finite_terms.device, dtype=finite_terms.dtype)
+        return prior + torch.sum(gain * finite_terms, dim=1, keepdim=True)
+
+    def _c_d_correction_raw(self, features):
+        return self.interface_residual_net_v2(features)
+
+    def _bounded_c_d_int(self, c_d_prior, corr_raw, T_raw):
+        time_gate = 1.0 - torch.exp(-torch.clamp(T_raw, min=0.0) / (0.05 * T_sim))
+        amp = self._intmemory_corr_amplitude().to(device=T_raw.device, dtype=T_raw.dtype)
+        c_d_candidate = c_d_prior + amp * time_gate * torch.tanh(corr_raw)
+        eps = 1e-6 * gamma
+        return torch.clamp(c_d_candidate, eps, gamma - eps)
+
+
 class HISInterfaceStateNet_v9_6(nn.Module):
     """Minimal interface-state block for the HIS-PINN prototype.
 
@@ -2158,6 +2285,158 @@ class ExternalNet_v9_6_MultiscaleGreenGridDynamicCausalConv(ExternalNet_v9_6_Mul
         return self._causal_source_convolution(T_raw, X_raw, z)
 
 
+class ExternalNet_v9_6_MultiscaleGreenGridDynamicCausalHybrid(ExternalNet_v9_6_MultiscaleGreenGridDynamicCausalConv):
+    """Causal-convolution correction plus a small gated direct correction."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.causal_hybrid_dynamic = True
+
+    def direct_dynamic_correction(self, T_raw, X_raw, r, x_net, state):
+        direct = ExternalNet_v9_6_MultiscaleGreenGridDynamic.dynamic_correction(
+            self,
+            T_raw,
+            X_raw,
+            r,
+            x_net,
+            state,
+        )
+        direct_scale = float(getattr(self.interface_state, "causal_direct_scale", 0.25))
+        return direct_scale * direct
+
+    def dynamic_correction(self, T_raw, X_raw, r, x_net, state):
+        causal_conv = super().dynamic_correction(T_raw, X_raw, r, x_net, state)
+        return causal_conv + self.direct_dynamic_correction(T_raw, X_raw, r, x_net, state)
+
+
+class ExternalNet_v9_6_MultiscaleGreenGridDynamicCausalHybridSmooth(ExternalNet_v9_6_MultiscaleGreenGridDynamicCausalHybrid):
+    """Causal-hybrid external field with smooth direct residual regularization."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.causal_hybrid_smooth_dynamic = True
+
+
+class ExternalNet_v9_6_MultiscaleGreenGridFluxTrace(ExternalNet_v9_6_MultiscaleGreenGridHybrid):
+    """Flux-trace-aware Green reconstruction for the external C/D field.
+
+    The standard Green-grid branch evaluates the Green kernel derivative at
+    y=0 with autograd, which gives zero for each quadrature node.  It then uses a
+    Hermite h10 slope correction to impose the boundary flux.  Decomposition
+    showed that this polynomial slope correction pollutes the near field during
+    the forward scan.
+
+    This branch treats the boundary flux as the analytic trace of the flux Green
+    solution: the Green term carries J_rxn history and its boundary flux is not
+    re-evaluated by autograd at y=0.  Therefore the explicit h10 slope
+    correction is removed.  The remaining corrections preserve the analytic flux
+    trace because they have zero value/slope at the interface except for the
+    value-matching h00 term, whose derivative is zero at z=0.
+    """
+
+    def __init__(
+        self,
+        gamma_val,
+        interface_state=None,
+        normalize_inputs=True,
+        time_grid_points=256,
+        kernel_points=64,
+        history_grad=True,
+        cache_history=True,
+    ):
+        super().__init__(
+            gamma_val,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+            time_grid_points=time_grid_points,
+            kernel_points=kernel_points,
+            history_grad=history_grad,
+            cache_history=cache_history,
+        )
+        self.fluxtrace_green = True
+        self.fluxtrace_analytic_boundary_flux = True
+        # Start with a broad value-correction trace.  A sharp h00 correction
+        # recreates the same near-interface PDE stiffness that FluxTrace is
+        # trying to remove from the old h10 slope patch.
+        self.fluxtrace_value_beta_raw = nn.Parameter(torch.tensor([-3.0], dtype=torch.float32))
+        self.fluxtrace_trace_weight = 25.0
+        self.register_buffer(
+            "fluxtrace_residual_scales",
+            torch.tensor([2.0, 1.25, 1.25, 1.5, 1.25], dtype=torch.float32).reshape(1, 5),
+        )
+
+    def fluxtrace_value_beta(self):
+        return 2.0 + 8.0 * torch.sigmoid(self.fluxtrace_value_beta_raw)
+
+    def fluxtrace_coordinate(self, T_raw, X_raw):
+        ext_length = X_ext_max - delta
+        y = torch.clamp(X_raw - delta, 0.0, ext_length)
+        r = torch.clamp(y / ext_length, 0.0, 1.0)
+        beta = self.fluxtrace_value_beta().to(device=T_raw.device, dtype=T_raw.dtype)
+        exp_neg_beta = torch.exp(-beta)
+        denom = torch.clamp(1.0 - exp_neg_beta, min=1e-5)
+        z = torch.clamp((1.0 - torch.exp(-beta * r)) / denom, 0.0, 1.0)
+        return y, r, z, beta
+
+    def fluxtrace_residual_correction(self, T_raw, z, x_net):
+        raw = self.residual_raw(x_net)
+        modes = self.residual_modes(z)
+        time_gate = torch.clamp(T_raw / T_sim, 0.0, 1.0)
+        scales = self.fluxtrace_residual_scales.to(device=raw.device, dtype=raw.dtype)
+        return time_gate * torch.sum(scales * modes * torch.tanh(raw), dim=1, keepdim=True)
+
+    def fluxtrace_trace_consistency_loss(self, T_raw):
+        """Neumann-to-Dirichlet consistency for the external diffusion trace.
+
+        For a pure external diffusion region, the boundary flux history already
+        determines the boundary concentration trace through the Abel/Green
+        operator.  If the interface-state network proposes an independent
+        C_D_int far away from G_flux[J](0,t), the h00 value correction becomes a
+        hidden boundary source and the external PDE loss cannot settle.  This
+        loss keeps the interface memory and the flux Green trace compatible
+        without using FDM data.
+        """
+        state = self.interface_state(T_raw)
+        d_int = self.gamma - state["C_C_int"]
+        c_d_all, _ = self.green_flux_convolution_fused(T_raw, torch.zeros_like(T_raw))
+        c_d_green_0 = c_d_all[:, 0:1]
+        return torch.mean((d_int - c_d_green_0) ** 2)
+
+    def forward(self, x_input):
+        T_raw = x_input[:, 0:1]
+        X_raw = x_input[:, 1:2]
+        if self.normalize_inputs:
+            t_net = normalize_time(T_raw)
+            x_net = torch.cat([t_net, normalize_ext_x(X_raw)], dim=1)
+        else:
+            x_net = x_input
+
+        state = self.interface_state(T_raw)
+        d_int = self.gamma - state["C_C_int"]
+        y, _, z, _ = self.fluxtrace_coordinate(T_raw, X_raw)
+
+        c_d_all, _ = self.green_flux_convolution_fused(T_raw, y)
+        c_d_green = c_d_all[:, 0:1]
+        c_d_green_0 = c_d_all[:, 1:2]
+        c_d_green_far = c_d_all[:, 2:3]
+
+        z2 = z * z
+        z3 = z2 * z
+        h00 = 2.0 * z3 - 3.0 * z2 + 1.0
+        h01 = -2.0 * z3 + 3.0 * z2
+
+        c_d_base = (
+            c_d_green +
+            h00 * (d_int - c_d_green_0) +
+            h01 * (torch.zeros_like(d_int) - c_d_green_far)
+        )
+        residual = self.fluxtrace_residual_correction(T_raw, z, x_net)
+
+        C_D = c_d_base + residual
+        C_C = self.gamma - C_D
+        return C_C, C_D
+
+
 class ExternalNet_v9_6_MultiscaleGreenGridMemory(ExternalNet_v9_6_MultiscaleGreenGridDynamic):
     """Dynamic Green-grid model with causal memory and coordinate-safe basis.
 
@@ -2824,6 +3103,78 @@ def create_models_v96(
                 cache_history=green_cache_history,
             ),
         )
+    if arch == "multiscale_green_grid_film_abel_kernelmix_causalhybrid":
+        interface_state = InterfaceStateNet_v9_6_FilmAbelKernelMixCausalHybrid(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        return (
+            ThinLayerNet_v9_6_MultiscaleHermite(interface_state=interface_state, normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6_MultiscaleGreenGridDynamicCausalHybrid(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
+    if arch == "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth":
+        interface_state = InterfaceStateNet_v9_6_FilmAbelKernelMixCausalHybridSmooth(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        return (
+            ThinLayerNet_v9_6_MultiscaleHermite(interface_state=interface_state, normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6_MultiscaleGreenGridDynamicCausalHybridSmooth(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
+    if arch == "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory":
+        interface_state = InterfaceStateNet_v9_6_FilmAbelKernelMixCausalHybridIntMemory(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        return (
+            ThinLayerNet_v9_6_MultiscaleHermite(interface_state=interface_state, normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6_MultiscaleGreenGridDynamicCausalHybridSmooth(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
+    if arch == "multiscale_green_grid_film_abel_kernelmix_fluxtrace":
+        interface_state = InterfaceStateNet_v9_6_FilmAbelKernelMixCausalHybridIntMemory(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        return (
+            ThinLayerNet_v9_6_MultiscaleHermite(interface_state=interface_state, normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6_MultiscaleGreenGridFluxTrace(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
     if arch == "multiscale_green_grid_film_abel_ema":
         interface_state = InterfaceStateNet_v9_6_FilmAbelEMA(
             normalize_inputs=normalize_inputs,
@@ -2986,7 +3337,13 @@ def normalize_loss_history(loss_history):
         return loss_history
 
     total_len = len(loss_history.get('total', []))
-    for key in ('interface_thin', 'interface_ext', 'bounds', 'reversal_continuity', 'dynamic_reversal_jump'):
+    for key in (
+        'interface_thin', 'interface_ext', 'bounds', 'reversal_continuity',
+        'dynamic_reversal_jump', 'direct_reversal_jump',
+        'direct_temporal_smooth', 'static_temporal_smooth',
+        'phase_temporal_smooth', 'cint_reversal_jump',
+        'cint_temporal_smooth',
+    ):
         values = list(loss_history.get(key, []))
         if len(values) < total_len:
             values = [float('nan')] * (total_len - len(values)) + values
@@ -3017,11 +3374,19 @@ def verify_interface_physics(model_thin, model_ext, device, n_test=50):
         C_C_X_int = torch.autograd.grad(C_C_int.sum(), X_int, create_graph=True, retain_graph=True)[0]
         C_D_X_int = torch.autograd.grad(C_D_int.sum(), X_int, create_graph=True, retain_graph=True)[0]
 
+        J_rxn = k_cat_star * C_B_int * C_C_int
         J_A = -D_rel_A * C_A_X_int
         J_B = -D_rel_B * C_B_X_int
-        J_C = -D_rel_C * C_C_X_int
-        J_D = -D_rel_D * C_D_X_int
-        J_rxn = k_cat_star * C_B_int * C_C_int
+        if getattr(model_ext, "fluxtrace_analytic_boundary_flux", False):
+            # FluxTrace treats the external boundary flux as the analytic trace
+            # of the Green flux solution.  Pointwise autograd at y=0 only sees
+            # the regular quadrature part and misses the singular boundary
+            # contribution, so report the trace-consistent flux here.
+            J_C = -J_rxn
+            J_D = J_rxn
+        else:
+            J_C = -D_rel_C * C_C_X_int
+            J_D = -D_rel_D * C_D_X_int
 
         results = {
             'J_A': J_A.detach().cpu().numpy(),
@@ -3332,7 +3697,10 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         'total': [], 'pde_thin': [], 'pde_ext': [], 'surface': [],
         'farfield': [], 'initial': [], 'bounds': [], 'interface': [],
         'interface_thin': [], 'interface_ext': [], 'reversal_continuity': [],
-        'dynamic_reversal_jump': [], 'lr': [], 'nernst_err': [],
+        'dynamic_reversal_jump': [], 'direct_reversal_jump': [],
+        'direct_temporal_smooth': [], 'static_temporal_smooth': [],
+        'phase_temporal_smooth': [], 'cint_reversal_jump': [],
+        'cint_temporal_smooth': [], 'lr': [], 'nernst_err': [],
         'surface_state': [], 'physics_score': []
     }
 
@@ -3425,6 +3793,23 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                     "S_corr(t) -> int S_corr(tau)*K(y,t-tau) dtau; "
                     f"source_scale={source_scale:.3f}"
                 )
+            if getattr(model_ext, "causal_hybrid_dynamic", False):
+                direct_scale = float(getattr(model_ext.interface_state, "causal_direct_scale", 0.25))
+                print(
+                    " 10d. Causal-hybrid dynamic correction: "
+                    "causal convolution plus gated direct residual; "
+                    f"direct_scale={direct_scale:.3f}"
+                )
+            if getattr(model_ext, "causal_hybrid_smooth_dynamic", False):
+                interface_state = model_ext.interface_state
+                print(
+                    " 10e. Smooth causal-hybrid regularization: "
+                    f"direct_jump_w={float(interface_state.direct_jump_weight):.1f}, "
+                    f"direct_smooth_w={float(interface_state.direct_smooth_weight):.1f}, "
+                    f"static_smooth_w={float(interface_state.static_smooth_weight):.1f}, "
+                    f"phase_smooth_w={float(interface_state.phase_smooth_weight):.1f}, "
+                    f"window={float(interface_state.smooth_time_window):.4f}"
+                )
         if getattr(model_ext, "memory_multibasis", False):
             print(
                 " 11. Memory/local-basis correction: "
@@ -3453,6 +3838,27 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 " 13. Film-Abel KernelMix prior: "
                 "C_D_prior=alpha*Abel[J]+sum(beta_i*ExpMemory_i[J])-dt_phase(state)*Abel[dJ]; "
                 f"alpha={float(interface_state._kernelmix_alpha().detach().cpu()):.4f}, beta={beta}"
+            )
+        if getattr(interface_state, "interface_memory_v2", False):
+            finite_gain = interface_state._intmemory_finite_gain().detach().cpu().numpy().reshape(-1).tolist()
+            corr_amp = float(interface_state._intmemory_corr_amplitude().detach().cpu())
+            print(
+                " 14. Interface-memory v2: "
+                "C_D_prior += positive finite-memory boost; "
+                "C_D_int=clamp(C_D_prior+DeltaC_D) instead of logit-sigmoid residual; "
+                f"finite_gain={finite_gain}, corr_amp={corr_amp:.4f}, "
+                f"cint_jump_w={float(interface_state.cint_reversal_jump_weight):.1f}, "
+                f"cint_smooth_w={float(interface_state.cint_temporal_smooth_weight):.1f}"
+            )
+        if getattr(model_ext, "fluxtrace_green", False):
+            beta = float(model_ext.fluxtrace_value_beta().detach().cpu())
+            scales = model_ext.fluxtrace_residual_scales.detach().cpu().numpy().reshape(-1).tolist()
+            print(
+                " 15. FluxTrace external field: "
+                "C_D=G_flux[J]+h00*(D_int-G0)+h01*(D_far-Gfar)+R_smooth; "
+                "external interface flux uses analytic Green trace, no h10 slope correction; "
+                f"beta={beta:.3f}, trace_w={float(model_ext.fluxtrace_trace_weight):.1f}, "
+                f"residual_scales={scales}"
             )
     print(f"{'='*80}")
 
@@ -3628,11 +4034,28 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         flux_D_res = -D_rel_D * C_D_X_int - J_rxn
 
         loss_interface_thin = torch.mean(flux_A_res**2) + torch.mean(flux_B_res**2)
-        loss_interface_ext = torch.mean(flux_C_res**2) + torch.mean(flux_D_res**2)
+        if getattr(model_ext, "fluxtrace_analytic_boundary_flux", False):
+            # The flux Green term satisfies the boundary flux in analytic trace
+            # sense.  Autograd at y=0 evaluates the regular part of the kernel
+            # and misses the singular t-tau -> 0 contribution, so using it here
+            # would incorrectly force a Hermite slope correction back in.
+            trace_loss = model_ext.fluxtrace_trace_consistency_loss(T_int)
+            loss_interface_ext = (
+                torch.mean((C_C_int + C_D_int - gamma) ** 2) +
+                float(getattr(model_ext, "fluxtrace_trace_weight", 1.0)) * trace_loss
+            )
+        else:
+            loss_interface_ext = torch.mean(flux_C_res**2) + torch.mean(flux_D_res**2)
         loss_interface = loss_interface_thin + loss_interface_ext
 
         loss_reversal_continuity = torch.zeros((), device=device)
         loss_dynamic_reversal_jump = torch.zeros((), device=device)
+        loss_direct_reversal_jump = torch.zeros((), device=device)
+        loss_direct_temporal_smooth = torch.zeros((), device=device)
+        loss_static_temporal_smooth = torch.zeros((), device=device)
+        loss_phase_temporal_smooth = torch.zeros((), device=device)
+        loss_cint_reversal_jump = torch.zeros((), device=device)
+        loss_cint_temporal_smooth = torch.zeros((), device=device)
         if getattr(interface_state, "continuous_time_features", False):
             n_continuity = min(1024, max(128, n_points // 4))
             X_cont = sample_external_x(n_continuity, device)
@@ -3645,7 +4068,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 (C_C_plus - C_C_minus) ** 2 +
                 (C_D_plus - C_D_minus) ** 2
             )
-            if getattr(interface_state, "causal_dynamic_correction", False):
+            if getattr(interface_state, "causal_dynamic_correction", False) and hasattr(model_ext, "dynamic_correction"):
                 ext_length = X_ext_max - delta
                 y_cont = torch.clamp(X_cont - delta, 0.0, ext_length)
                 r_cont = torch.clamp(y_cont / ext_length, 0.0, 1.0)
@@ -3660,6 +4083,91 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 dyn_minus = model_ext.dynamic_correction(T_minus, X_cont, r_cont, x_minus, state_minus)
                 dyn_plus = model_ext.dynamic_correction(T_plus, X_cont, r_cont, x_plus, state_plus)
                 loss_dynamic_reversal_jump = torch.mean((dyn_plus - dyn_minus) ** 2)
+                if getattr(interface_state, "causal_hybrid_smooth", False) and hasattr(model_ext, "direct_dynamic_correction"):
+                    direct_minus = model_ext.direct_dynamic_correction(T_minus, X_cont, r_cont, x_minus, state_minus)
+                    direct_plus = model_ext.direct_dynamic_correction(T_plus, X_cont, r_cont, x_plus, state_plus)
+                    loss_direct_reversal_jump = torch.mean((direct_plus - direct_minus) ** 2)
+
+                    def external_regularizer_terms(T_eval, X_eval):
+                        y_eval = torch.clamp(X_eval - delta, 0.0, X_ext_max - delta)
+                        r_eval = torch.clamp(y_eval / (X_ext_max - delta), 0.0, 1.0)
+                        if model_ext.normalize_inputs:
+                            t_net_eval = normalize_time(T_eval)
+                            x_net_eval = torch.cat([t_net_eval, normalize_ext_x(X_eval)], dim=1)
+                        else:
+                            t_net_eval = T_eval
+                            x_net_eval = torch.cat([T_eval, X_eval], dim=1)
+                        beta_eval = 0.5 + 12.0 * torch.sigmoid(model_ext.beta_net(t_net_eval))
+                        exp_neg_beta_eval = torch.exp(-beta_eval)
+                        denom_eval = torch.clamp(1.0 - exp_neg_beta_eval, min=1e-5)
+                        z_eval = torch.clamp(
+                            (1.0 - torch.exp(-beta_eval * r_eval)) / denom_eval,
+                            0.0,
+                            1.0,
+                        )
+                        state_eval = interface_state(T_eval)
+                        direct_eval = model_ext.direct_dynamic_correction(
+                            T_eval, X_eval, r_eval, x_net_eval, state_eval,
+                        )
+                        static_eval = model_ext.residual_correction(T_eval, z_eval, x_net_eval)
+                        return direct_eval, static_eval
+
+                    n_smooth = min(512, max(128, n_points // 8))
+                    X_smooth = sample_external_x(n_smooth, device)
+                    smooth_window = float(getattr(interface_state, "smooth_time_window", 0.08 * T_sim))
+                    dt_smooth = 0.0025 * T_sim
+                    T_mid = (
+                        T_switch * T_sim +
+                        (2.0 * torch.rand_like(X_smooth) - 1.0) * smooth_window
+                    )
+                    T_mid = torch.clamp(T_mid, dt_smooth, T_sim - dt_smooth)
+                    direct_prev, static_prev = external_regularizer_terms(T_mid - dt_smooth, X_smooth)
+                    direct_mid, static_mid = external_regularizer_terms(T_mid, X_smooth)
+                    direct_next, static_next = external_regularizer_terms(T_mid + dt_smooth, X_smooth)
+                    loss_direct_temporal_smooth = torch.mean(
+                        (direct_next - 2.0 * direct_mid + direct_prev) ** 2
+                    )
+                    loss_static_temporal_smooth = torch.mean(
+                        (static_next - 2.0 * static_mid + static_prev) ** 2
+                    )
+
+                    if hasattr(interface_state, "_dynamic_phase_shift"):
+                        n_phase = 96
+                        T_phase = torch.linspace(
+                            max(0.0, T_switch * T_sim - smooth_window),
+                            min(float(T_sim), T_switch * T_sim + smooth_window),
+                            n_phase,
+                            device=device,
+                        ).reshape(-1, 1)
+                        history_phase = interface_state._history_grid(T_phase)
+                        theta_phase, theta_dot_phase, _, _ = interface_state._surface_state(T_phase)
+                        j_phase = interface_state._interp_multi_grid(T_phase, history_phase["J"])
+                        d_j_phase = interface_state._interp_multi_grid(T_phase, history_phase["dJ"])
+                        phase_values = interface_state._dynamic_phase_shift(
+                            theta_phase, theta_dot_phase, j_phase, d_j_phase,
+                        )
+                        loss_phase_temporal_smooth = torch.mean(
+                            (phase_values[2:] - 2.0 * phase_values[1:-1] + phase_values[:-2]) ** 2
+                        )
+
+            if getattr(interface_state, "cint_reversal_jump_weight", 0.0) > 0:
+                c_int_minus = interface_state(T_minus)["C_C_int"]
+                c_int_plus = interface_state(T_plus)["C_C_int"]
+                loss_cint_reversal_jump = torch.mean((c_int_plus - c_int_minus) ** 2)
+
+            if getattr(interface_state, "cint_temporal_smooth_weight", 0.0) > 0:
+                smooth_window = float(getattr(interface_state, "smooth_time_window", 0.08 * T_sim))
+                n_cint = 128
+                T_cint = torch.linspace(
+                    max(0.0, T_switch * T_sim - smooth_window),
+                    min(float(T_sim), T_switch * T_sim + smooth_window),
+                    n_cint,
+                    device=device,
+                ).reshape(-1, 1)
+                c_int_values = interface_state(T_cint)["C_C_int"]
+                loss_cint_temporal_smooth = torch.mean(
+                    (c_int_values[2:] - 2.0 * c_int_values[1:-1] + c_int_values[:-2]) ** 2
+                )
 
         # ========== 4. Weight adjustment ==========
         if epoch < start_epoch + 3000:
@@ -3681,6 +4189,12 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             'interface_ext': ext_interface_weight,
             'reversal_continuity': 100.0,
             'dynamic_reversal_jump': float(getattr(interface_state, "causal_jump_weight", 0.0)),
+            'direct_reversal_jump': float(getattr(interface_state, "direct_jump_weight", 0.0)),
+            'direct_temporal_smooth': float(getattr(interface_state, "direct_smooth_weight", 0.0)),
+            'static_temporal_smooth': float(getattr(interface_state, "static_smooth_weight", 0.0)),
+            'phase_temporal_smooth': float(getattr(interface_state, "phase_smooth_weight", 0.0)),
+            'cint_reversal_jump': float(getattr(interface_state, "cint_reversal_jump_weight", 0.0)),
+            'cint_temporal_smooth': float(getattr(interface_state, "cint_temporal_smooth_weight", 0.0)),
         }
 
         # 3.7 Total loss
@@ -3694,7 +4208,13 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             base_weights['interface_thin'] * loss_interface_thin +
             base_weights['interface_ext'] * loss_interface_ext +
             base_weights['reversal_continuity'] * loss_reversal_continuity +
-            base_weights['dynamic_reversal_jump'] * loss_dynamic_reversal_jump
+            base_weights['dynamic_reversal_jump'] * loss_dynamic_reversal_jump +
+            base_weights['direct_reversal_jump'] * loss_direct_reversal_jump +
+            base_weights['direct_temporal_smooth'] * loss_direct_temporal_smooth +
+            base_weights['static_temporal_smooth'] * loss_static_temporal_smooth +
+            base_weights['phase_temporal_smooth'] * loss_phase_temporal_smooth +
+            base_weights['cint_reversal_jump'] * loss_cint_reversal_jump +
+            base_weights['cint_temporal_smooth'] * loss_cint_temporal_smooth
         )
         physics_score = (
             pde_thin_weight * loss_pde_thin +
@@ -3706,7 +4226,13 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             thin_interface_weight * loss_interface_thin +
             ext_interface_weight * loss_interface_ext +
             base_weights['reversal_continuity'] * loss_reversal_continuity +
-            base_weights['dynamic_reversal_jump'] * loss_dynamic_reversal_jump
+            base_weights['dynamic_reversal_jump'] * loss_dynamic_reversal_jump +
+            base_weights['direct_reversal_jump'] * loss_direct_reversal_jump +
+            base_weights['direct_temporal_smooth'] * loss_direct_temporal_smooth +
+            base_weights['static_temporal_smooth'] * loss_static_temporal_smooth +
+            base_weights['phase_temporal_smooth'] * loss_phase_temporal_smooth +
+            base_weights['cint_reversal_jump'] * loss_cint_reversal_jump +
+            base_weights['cint_temporal_smooth'] * loss_cint_temporal_smooth
         )
 
         # ========== 5. Optimization ==========
@@ -3757,6 +4283,12 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         loss_history.setdefault('interface_ext', []).append(loss_interface_ext.item())
         loss_history.setdefault('reversal_continuity', []).append(loss_reversal_continuity.item())
         loss_history.setdefault('dynamic_reversal_jump', []).append(loss_dynamic_reversal_jump.item())
+        loss_history.setdefault('direct_reversal_jump', []).append(loss_direct_reversal_jump.item())
+        loss_history.setdefault('direct_temporal_smooth', []).append(loss_direct_temporal_smooth.item())
+        loss_history.setdefault('static_temporal_smooth', []).append(loss_static_temporal_smooth.item())
+        loss_history.setdefault('phase_temporal_smooth', []).append(loss_phase_temporal_smooth.item())
+        loss_history.setdefault('cint_reversal_jump', []).append(loss_cint_reversal_jump.item())
+        loss_history.setdefault('cint_temporal_smooth', []).append(loss_cint_temporal_smooth.item())
         loss_history['lr'].append(optimizer.param_groups[0]['lr'])
         loss_history['nernst_err'].append(nernst_err)
         loss_history['surface_state'].append(loss_surface_state.item())
@@ -3790,6 +4322,10 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 f"iface=({loss_interface_thin.item():.2e},{loss_interface_ext.item():.2e}) "
                 f"rev={loss_reversal_continuity.item():.2e} "
                 f"dynjump={loss_dynamic_reversal_jump.item():.2e} "
+                f"direct=({loss_direct_reversal_jump.item():.2e},{loss_direct_temporal_smooth.item():.2e}) "
+                f"static={loss_static_temporal_smooth.item():.2e} "
+                f"phase={loss_phase_temporal_smooth.item():.2e} "
+                f"cint=({loss_cint_reversal_jump.item():.2e},{loss_cint_temporal_smooth.item():.2e}) "
                 f"| {sec_per_epoch:.2f}s/epoch | last {progress_every}={interval_sec:.1f}s "
                 f"| ETA={eta_sec/60.0:.1f}min{gpu_msg}{phase_msg}",
                 flush=True,
@@ -3865,6 +4401,28 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 f"dynamic jump: {loss_dynamic_reversal_jump.item():.4e} "
                 f"(w={base_weights['dynamic_reversal_jump']:.1f})"
             )
+            if (
+                base_weights['direct_reversal_jump'] > 0 or
+                base_weights['direct_temporal_smooth'] > 0 or
+                base_weights['static_temporal_smooth'] > 0 or
+                base_weights['phase_temporal_smooth'] > 0 or
+                base_weights['cint_reversal_jump'] > 0 or
+                base_weights['cint_temporal_smooth'] > 0
+            ):
+                print(
+                    f"  Smooth diagnostics: direct_jump={loss_direct_reversal_jump.item():.4e} "
+                    f"(w={base_weights['direct_reversal_jump']:.1f}); "
+                    f"direct_smooth={loss_direct_temporal_smooth.item():.4e} "
+                    f"(w={base_weights['direct_temporal_smooth']:.1f}); "
+                    f"static_smooth={loss_static_temporal_smooth.item():.4e} "
+                    f"(w={base_weights['static_temporal_smooth']:.1f}); "
+                    f"phase_smooth={loss_phase_temporal_smooth.item():.4e} "
+                    f"(w={base_weights['phase_temporal_smooth']:.1f}); "
+                    f"cint_jump={loss_cint_reversal_jump.item():.4e} "
+                    f"(w={base_weights['cint_reversal_jump']:.1f}); "
+                    f"cint_smooth={loss_cint_temporal_smooth.item():.4e} "
+                    f"(w={base_weights['cint_temporal_smooth']:.1f})"
+                )
             print(f"  Hard: A+B={err_AB:.2e}, C+D={err_CD:.2e}")
             print(f"  Nernst={nernst_err_test:.2e} | J_rxn={J_rxn_test:.4e}")
             print(f"  C_B(δ)={C_B_int_test.mean().item():.4f}, C_C(δ)={C_C_int_test.mean().item():.4f}")
@@ -3985,6 +4543,18 @@ def predict_and_visualize_v9_6(model_thin, model_ext, loss_history, gamma, n_cv=
         ax2.semilogy(epochs, loss_history['reversal_continuity'], color='#E66101', alpha=0.6, label='Reversal cont.')
     if len(loss_history.get('dynamic_reversal_jump', [])) == len(loss_history['total']):
         ax2.semilogy(epochs, loss_history['dynamic_reversal_jump'], color='#5E3C99', alpha=0.6, label='Dynamic jump')
+    if len(loss_history.get('direct_reversal_jump', [])) == len(loss_history['total']):
+        ax2.semilogy(epochs, loss_history['direct_reversal_jump'], color='#1B9E77', alpha=0.6, label='Direct jump')
+    if len(loss_history.get('direct_temporal_smooth', [])) == len(loss_history['total']):
+        ax2.semilogy(epochs, loss_history['direct_temporal_smooth'], color='#D95F02', alpha=0.6, label='Direct smooth')
+    if len(loss_history.get('static_temporal_smooth', [])) == len(loss_history['total']):
+        ax2.semilogy(epochs, loss_history['static_temporal_smooth'], color='#7570B3', alpha=0.6, label='Static smooth')
+    if len(loss_history.get('phase_temporal_smooth', [])) == len(loss_history['total']):
+        ax2.semilogy(epochs, loss_history['phase_temporal_smooth'], color='#E7298A', alpha=0.6, label='Phase smooth')
+    if len(loss_history.get('cint_reversal_jump', [])) == len(loss_history['total']):
+        ax2.semilogy(epochs, loss_history['cint_reversal_jump'], color='#66A61E', alpha=0.6, label='Cint jump')
+    if len(loss_history.get('cint_temporal_smooth', [])) == len(loss_history['total']):
+        ax2.semilogy(epochs, loss_history['cint_temporal_smooth'], color='#A6761D', alpha=0.6, label='Cint smooth')
     ax2.set_xlabel('Epoch')
     ax2.set_ylabel('Loss')
     ax2.set_title('Loss Components')
@@ -4323,7 +4893,7 @@ if __name__ == "__main__":
                         help="Use raw coordinates for old v9.6 checkpoints.")
     parser.add_argument("--cv-points", type=int, default=8000)
     parser.add_argument("--fdm-csv", default="../FDM/kcat1_v42_cv_data_v42.csv")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256,
                         help="Global history time-grid size for multiscale_green_grid.")
     parser.add_argument("--green-kernel-points", type=int, default=32,
@@ -4430,7 +5000,10 @@ if __name__ == "__main__":
                 'total': [], 'pde_thin': [], 'pde_ext': [], 'surface': [],
                 'farfield': [], 'initial': [], 'bounds': [], 'interface': [],
                 'interface_thin': [], 'interface_ext': [], 'reversal_continuity': [],
-                'dynamic_reversal_jump': [], 'lr': [], 'nernst_err': [],
+                'dynamic_reversal_jump': [], 'direct_reversal_jump': [],
+                'direct_temporal_smooth': [], 'static_temporal_smooth': [],
+                'phase_temporal_smooth': [], 'cint_reversal_jump': [],
+                'cint_temporal_smooth': [], 'lr': [], 'nernst_err': [],
                 'surface_state': [], 'physics_score': []
             }
         print(f"\nEvaluating checkpoint: {args.checkpoint}")
