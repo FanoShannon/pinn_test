@@ -1481,12 +1481,15 @@ class InterfaceStateNet_v9_6_FilmTraceClean(
 
         C_B_int = C_B_surface / (1 + k*delta*C_C_int/D_B)
         J_rxn   = k*C_B_int*C_C_int
-        C_D_int = alpha*Abel[J] + finite-memory terms - phase*Abel[dJ]
-                  + bounded residual
+        C_D_int = alpha*Abel[J] + positive finite-memory terms
+                  - phase*Abel[dJ]
         C_C_int = gamma - C_D_int.
 
-    Old TraceGreen checkpoints remain compatible because no parameter shapes are
-    changed; this class only disables ablation-specific training penalties.
+    The contribution audit showed that the small interface residual and the old
+    KernelMix beta terms do not help the trained TraceGreen solution, while the
+    positive finite-memory boost is essential.  Old TraceGreen checkpoints remain
+    compatible because no parameter shapes are changed; this class disables
+    ablation-specific training penalties and ignores the non-contributing terms.
     """
 
     def __init__(self, *args, **kwargs):
@@ -1505,6 +1508,17 @@ class InterfaceStateNet_v9_6_FilmTraceClean(
         self.phase_smooth_weight = 0.0
         self.cint_reversal_jump_weight = 0.0
         self.cint_temporal_smooth_weight = 0.0
+
+    def _kernelmix_beta(self):
+        return torch.zeros(1, 4, device=self.kernelmix_beta_raw.device, dtype=self.kernelmix_beta_raw.dtype)
+
+    def _c_d_correction_raw(self, features):
+        return 0.0 * features[:, 0:1]
+
+    def _bounded_c_d_int(self, c_d_prior, corr_raw, T_raw):
+        del corr_raw, T_raw
+        eps = 1e-6 * gamma
+        return torch.clamp(c_d_prior, eps, gamma - eps)
 
 
 class HISInterfaceStateNet_v9_6(nn.Module):
@@ -2807,12 +2821,17 @@ class ExternalNet_v9_6_FilmTraceGreenClean(ExternalNet_v9_6_MultiscaleGreenGridF
     The external concentration is reconstructed from a single causal boundary
     trace rather than predicted directly:
 
-        C_D(y,t) = G_trace^erfc[C_D_int](y,t) + h01(y)*(0-D_far) + R_smooth(y,t)
+        C_D(y,t) = G_trace^erfc[C_D_int](y,t) + h01(y)*(0-D_far)
+                   + s_train(e)*R_smooth(y,t)
         C_C(y,t) = gamma - C_D(y,t).
 
     The erfc variable transform in ``trace_boundary_convolution_fused`` is the
     structural part of the method: it preserves the y -> 0+ trace and removes
-    the near-interface discontinuity seen with ordinary time quadrature.
+    the near-interface discontinuity seen with ordinary time quadrature.  The
+    contribution audit showed that the learned external residual R_smooth is a
+    post-training negative contributor for the best checkpoint.  Therefore it is
+    treated as a training scaffold: useful early when C_D_int is still inaccurate,
+    but decayed to zero for the final clean model.
     """
 
     def __init__(self, *args, **kwargs):
@@ -2825,6 +2844,15 @@ class ExternalNet_v9_6_FilmTraceGreenClean(ExternalNet_v9_6_MultiscaleGreenGridF
         self.dynamic_green_residual = False
         self.causal_hybrid_dynamic = False
         self.causal_hybrid_smooth_dynamic = False
+        self.register_buffer("clean_residual_scale", torch.tensor(0.0, dtype=torch.float32))
+
+    def set_clean_residual_scale(self, scale):
+        scale = float(max(0.0, scale))
+        self.clean_residual_scale.fill_(scale)
+
+    def tracegreen_residual_correction(self, T_raw, z, x_net):
+        scale = self.clean_residual_scale.to(device=T_raw.device, dtype=T_raw.dtype)
+        return scale * super().tracegreen_residual_correction(T_raw, z, x_net)
 
 
 class ExternalNet_v9_6_MultiscaleGreenGridMemory(ExternalNet_v9_6_MultiscaleGreenGridDynamic):
@@ -4116,7 +4144,9 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                      base_train_points=8000, max_train_points=15000,
                      train_point_growth=40, progress_every=50,
                      empty_cache_every=0, learning_rate=5e-5,
-                     abort_on_nan=False):
+                     abort_on_nan=False,
+                     clean_residual_initial_scale=0.0,
+                     clean_residual_decay_epochs=0):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     model_thin.to(device)
@@ -4364,6 +4394,15 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         model_ext.train()
         if hasattr(model_ext, "clear_step_cache"):
             model_ext.clear_step_cache()
+
+        local_epoch = epoch - start_epoch
+        if hasattr(model_ext, "set_clean_residual_scale"):
+            if clean_residual_decay_epochs and clean_residual_decay_epochs > 0:
+                frac = min(max(local_epoch / float(clean_residual_decay_epochs), 0.0), 1.0)
+                clean_scale = float(clean_residual_initial_scale) * (1.0 - frac)
+            else:
+                clean_scale = float(clean_residual_initial_scale)
+            model_ext.set_clean_residual_scale(clean_scale)
 
         n_points = min(
             int(base_train_points) + (epoch - start_epoch) // 10 * int(train_point_growth),
@@ -4822,6 +4861,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 )
             if getattr(interface_state, "mixed_abel_interface", False):
                 phase_msg += f" | abel_mix_lambda={float(interface_state._abel_mix_lambda().detach().cpu()):.6f}"
+            if hasattr(model_ext, "clean_residual_scale"):
+                phase_msg += f" | R_smooth_scale={float(model_ext.clean_residual_scale.detach().cpu()):.3f}"
             print(
                 f"[progress] epoch {epoch + 1}/{start_epoch + n_epochs} "
                 f"({step_count}/{n_epochs}) | loss={total_loss.item():.3e} "
@@ -4935,6 +4976,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             print(f"  C_B(δ)={C_B_int_test.mean().item():.4f}, C_C(δ)={C_C_int_test.mean().item():.4f}")
             print(f"  Best physics score: {best_score:.2e} @ {best_epoch}")
             print(f"  LR: {optimizer.param_groups[0]['lr']:.2e}")
+            if hasattr(model_ext, "clean_residual_scale"):
+                print(f"  R_smooth scaffold scale: {float(model_ext.clean_residual_scale.detach().cpu()):.4f}")
             interface_state = getattr(model_ext, "interface_state", None)
             if getattr(interface_state, "mixed_abel_interface", False):
                 print(f"  Abel mix lambda: {float(interface_state._abel_mix_lambda().detach().cpu()):.6f}")
@@ -5452,6 +5495,10 @@ if __name__ == "__main__":
                         help="Call torch.cuda.empty_cache() every N training steps. Use 0 to disable.")
     parser.add_argument("--learning-rate", type=float, default=5e-5,
                         help="Initial AdamW learning rate.")
+    parser.add_argument("--clean-residual-initial-scale", type=float, default=0.0,
+                        help="Initial R_smooth scaffold scale for multiscale_film_tracegreen_clean.")
+    parser.add_argument("--clean-residual-decay-epochs", type=int, default=0,
+                        help="Epochs over which the clean R_smooth scaffold decays linearly to zero.")
     parser.add_argument("--abort-on-nan", action="store_true",
                         help="Abort before optimizer.step if loss or gradient norm is non-finite.")
     parser.add_argument("--reset-best-score", action="store_true",
@@ -5595,6 +5642,8 @@ if __name__ == "__main__":
         empty_cache_every=args.empty_cache_every,
         learning_rate=args.learning_rate,
         abort_on_nan=args.abort_on_nan,
+        clean_residual_initial_scale=args.clean_residual_initial_scale,
+        clean_residual_decay_epochs=args.clean_residual_decay_epochs,
     )
 
     # 可视化

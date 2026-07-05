@@ -50,25 +50,31 @@ J_rxn(t) = k_cat*C_B_int(t)*C_C_int(t)
 
 C_D_int(t) =
     alpha*A[J_rxn](t)
-  + sum_i beta_i*M_i[J_rxn](t)
+  + sum_i g_i*M_i[J_rxn](t)
   - dt_phase(t)*A[dJ_rxn/dt](t)
-  + r_int(t)
 
 C_C_int(t) = gamma - C_D_int(t)
 ```
 
-where `A[...]` is the Abel memory term and `M_i[...]` are finite-memory
-exponential kernels.  The external field is then driven by a single boundary
-trace:
+where `A[...]` is the Abel memory term and `M_i[...]` are positive finite-memory
+exponential kernels.  The small interface residual and old KernelMix beta terms
+are disabled in the clean final path because posterior contribution auditing
+showed they do not improve the trained TraceGreen checkpoint.  The external
+field is then driven by a single boundary trace:
 
 ```text
 C_D(y,t) =
     G_trace_erfc[C_D_int](y,t)
   + h01(y)*(0 - D_far(t))
-  + R_smooth(y,t)
+  + s_train(e)*R_smooth(y,t)
 
 C_C(y,t) = gamma - C_D(y,t)
 ```
+
+`R_smooth` is treated as a training scaffold.  It can be enabled early when the
+interface trace is still inaccurate, then linearly decayed to zero.  For final
+posterior evaluation from the best TraceGreen checkpoint, the default clean
+scale is `s_train=0`.
 
 The key numerical/mathematical contribution is the trace-preserving erfc
 quadrature used in `G_trace_erfc`:
@@ -86,11 +92,11 @@ first external grid point that appeared with ordinary time quadrature.
 |---|---|---|
 | hard conservation `C_A+C_B=1`, `C_C+C_D=gamma` | final | physical invariant and stable |
 | Film relation for `C_B_int` | final | explains the accurate `C_B_int` behavior |
-| Abel + finite-memory KernelMix | final | compact causal interface memory |
-| bounded interface residual `r_int(t)` | final | small model-discrepancy correction |
+| Abel + positive finite-memory terms | final | compact causal interface memory |
+| bounded interface residual `r_int(t)` | removed from final | posterior audit showed no benefit |
 | TraceGreen external field | final | propagates `C_D_int` causally into the external region |
 | erfc trace-preserving quadrature | final | fixes the near-interface discontinuity |
-| smooth external residual `R_smooth(y,t)` | final | endpoint-compatible correction for finite-domain effects |
+| smooth external residual `R_smooth(y,t)` | training scaffold | useful early, decayed to zero for final clean evaluation |
 
 ### What Is Moved to Ablation
 
@@ -103,6 +109,7 @@ first external grid point that appeared with ordinary time quadrature.
 | matched Abel | failed ablation | direct replacement worsened `C_C_int` |
 | mixed Abel | failed ablation | learned lambda stayed near zero |
 | extra reversal-jump / smoothness penalties | removed from final | diagnostic losses, not core physics |
+| old KernelMix `beta_i` terms | removed from final | posterior audit showed negligible or negative contribution |
 
 ## Experiment History
 
@@ -447,6 +454,18 @@ For a short check:
 ```bash
 %cd /content/gdrive/MyDrive/pinn_v96
 !EPOCHS=100 SAVE_EVERY=100 FDM_COMPARE_EVERY=100 \
+  bash run_colab_film_tracegreen_clean_256x64.sh
+```
+
+If you warm start clean training from an early dynamic/stage1 checkpoint instead
+of the best TraceGreen checkpoint, enable the external residual as a scaffold and
+decay it:
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!EPOCHS=1500 SAVE_EVERY=250 FDM_COMPARE_EVERY=250 \
+  CLEAN_RESIDUAL_INITIAL_SCALE=1.0 CLEAN_RESIDUAL_DECAY_EPOCHS=1000 \
+  RESUME_CKPT=/content/gdrive/MyDrive/pinn_v96/runs_film_abel_256x64_two_stage/20260701_140415/checkpoints_dynamic_256x64/pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_dynamic_best.pth \
   bash run_colab_film_tracegreen_clean_256x64.sh
 ```
 

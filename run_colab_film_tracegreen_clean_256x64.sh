@@ -32,6 +32,8 @@ MAX_TRAIN_POINTS="${MAX_TRAIN_POINTS:-9000}"
 SAVE_EVERY="${SAVE_EVERY:-250}"
 PROGRESS_EVERY="${PROGRESS_EVERY:-25}"
 EMPTY_CACHE_EVERY="${EMPTY_CACHE_EVERY:-100}"
+CLEAN_RESIDUAL_INITIAL_SCALE="${CLEAN_RESIDUAL_INITIAL_SCALE:-0.0}"
+CLEAN_RESIDUAL_DECAY_EPOCHS="${CLEAN_RESIDUAL_DECAY_EPOCHS:-0}"
 
 FDM_PKL="${FDM_PKL:-/content/gdrive/MyDrive/FDM/kcat1_v42_thin_layer_catalytic_v42.pkl}"
 FDM_COMPARE_EVERY="${FDM_COMPARE_EVERY:-250}"
@@ -159,6 +161,8 @@ train_cmd=(
     --base-train-points "$BASE_TRAIN_POINTS"
     --max-train-points "$MAX_TRAIN_POINTS"
     --train-point-growth 0
+    --clean-residual-initial-scale "$CLEAN_RESIDUAL_INITIAL_SCALE"
+    --clean-residual-decay-epochs "$CLEAN_RESIDUAL_DECAY_EPOCHS"
     --pde-thin-weight 10.0
     --pde-ext-weight 10.0
     --thin-interface-weight 300.0
