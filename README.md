@@ -15,6 +15,95 @@ Main code files:
 - `decompose_concentration_error.py`: spatial/time-group error decomposition from saved NPZ fields.
 - `plot_direct_concentration_comparison.py`: direct FDM/PINN field and curve plots from saved NPZ/JSON outputs.
 
+## Final Clean Architecture
+
+The current paper-facing architecture is:
+
+```text
+multiscale_film_tracegreen_clean
+```
+
+It is a cleaned-up version of the best TraceGreen branch.  It keeps the pieces
+that produced clear gains and removes exploratory correction paths that were
+useful for diagnosis but make the final story hard to defend.
+
+### Mathematical Form
+
+Thin-layer conservation is hard constrained:
+
+```text
+C_A + C_B = 1
+```
+
+External-region conservation is also hard constrained:
+
+```text
+C_C + C_D = gamma
+```
+
+The interface state is represented by a Film-Abel/KernelMix chain:
+
+```text
+C_B_int(t) = C_B_surface(t) / (1 + k_cat*delta*C_C_int(t)/D_B)
+
+J_rxn(t) = k_cat*C_B_int(t)*C_C_int(t)
+
+C_D_int(t) =
+    alpha*A[J_rxn](t)
+  + sum_i beta_i*M_i[J_rxn](t)
+  - dt_phase(t)*A[dJ_rxn/dt](t)
+  + r_int(t)
+
+C_C_int(t) = gamma - C_D_int(t)
+```
+
+where `A[...]` is the Abel memory term and `M_i[...]` are finite-memory
+exponential kernels.  The external field is then driven by a single boundary
+trace:
+
+```text
+C_D(y,t) =
+    G_trace_erfc[C_D_int](y,t)
+  + h01(y)*(0 - D_far(t))
+  + R_smooth(y,t)
+
+C_C(y,t) = gamma - C_D(y,t)
+```
+
+The key numerical/mathematical contribution is the trace-preserving erfc
+quadrature used in `G_trace_erfc`:
+
+```text
+lim_{y -> 0+} G_trace_erfc[C_D_int](y,t) = C_D_int(t)
+```
+
+This removed the nonphysical discontinuity between the interface point and the
+first external grid point that appeared with ordinary time quadrature.
+
+### What Is Kept
+
+| Component | Status | Reason |
+|---|---|---|
+| hard conservation `C_A+C_B=1`, `C_C+C_D=gamma` | final | physical invariant and stable |
+| Film relation for `C_B_int` | final | explains the accurate `C_B_int` behavior |
+| Abel + finite-memory KernelMix | final | compact causal interface memory |
+| bounded interface residual `r_int(t)` | final | small model-discrepancy correction |
+| TraceGreen external field | final | propagates `C_D_int` causally into the external region |
+| erfc trace-preserving quadrature | final | fixes the near-interface discontinuity |
+| smooth external residual `R_smooth(y,t)` | final | endpoint-compatible correction for finite-domain effects |
+
+### What Is Moved to Ablation
+
+| Component | Status | Reason |
+|---|---|---|
+| direct dynamic external correction | ablation | can create time-switching artifacts |
+| causal gate / causal convolution variants | ablation | useful diagnosis, not needed in final TraceGreen path |
+| FluxTrace | ablation | less stable than single-trace TraceGreen |
+| EMA branch | ablation | helped analyze memory drift but not final |
+| matched Abel | failed ablation | direct replacement worsened `C_C_int` |
+| mixed Abel | failed ablation | learned lambda stayed near zero |
+| extra reversal-jump / smoothness penalties | removed from final | diagnostic losses, not core physics |
+
 ## Experiment History
 
 | Stage | Architecture | Main change | Representative checkpoint | Key observation |
@@ -30,6 +119,12 @@ Main code files:
 | Film-Abel KernelMix | `multiscale_green_grid_film_abel_kernelmix` | Lets Abel and finite-memory kernels compete inside the interface prior | `runs_film_abel_kernelmix_256x64/<timestamp>/...` | Targets the reverse-scan `C_C_int` peak without starting from the EMA branch. |
 | KernelMix causal | `multiscale_green_grid_film_abel_kernelmix_causal` | Multiplies the dynamic external correction by a diffusion reachability gate | `runs_film_abel_kernelmix_causal_256x64/<timestamp>/...` | Tests whether the pre-reversal far-field blue residual is caused by anti-causal dynamic correction. |
 | KernelMix causal-conv | `multiscale_green_grid_film_abel_kernelmix_causalconv` | Replaces direct dynamic field correction with a learned source convolved through the heat kernel | `runs_film_abel_kernelmix_causalconv_256x64/<timestamp>/...` | Tests whether the reversal band is caused by dynamic correction changing too sharply in time. |
+| KernelMix causal-hybrid | `multiscale_green_grid_film_abel_kernelmix_causalhybrid` | Adds causal-convolution correction plus a small diffusion-gated direct residual | `runs_film_abel_kernelmix_causalhybrid_256x64/<timestamp>/...` | Combines causalconv continuity with causal-gate local flexibility. |
+| KernelMix causal-hybrid smooth | `multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth` | Reduces the direct residual and adds direct/static/phase temporal smoothness losses | `runs_film_abel_kernelmix_causalhybrid_smooth_256x64/<timestamp>/...` | Tests whether the remaining reversal line is caused by direct residual time switching. |
+| TraceGreen erfc | `multiscale_green_grid_film_abel_kernelmix_tracegreen` | Uses single Film-Abel boundary trace and erfc trace-preserving Dirichlet Green lift | `runs_film_abel_kernelmix_tracegreen_256x64/20260705_081613/...` | Best single-parameter result; removes near-interface discontinuity. |
+| Matched Abel | `multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel` | Replaces midpoint Abel with singularity-matched Abel quadrature | `runs_film_abel_kernelmix_tracegreen_matchedabel_256x64/...` | Worse `C_C_int`; interface error is not simple Abel endpoint quadrature error. |
+| Mixed Abel | `multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel` | Learnable mixture of midpoint Abel and matched Abel | `runs_film_abel_kernelmix_tracegreen_mixedabel_256x64/...` | Lambda stayed near zero; keep old effective Abel/KernelMix memory. |
+| Clean final | `multiscale_film_tracegreen_clean` | Finalized Film-Abel + erfc TraceGreen, with exploratory debug losses disabled | `runs_film_tracegreen_clean_256x64/<timestamp>/...` | Paper-facing architecture and baseline for parameter generalization. |
 
 ## Representative Posterior Metrics
 
@@ -52,6 +147,8 @@ Current v4.2 posterior checkpoints:
 | `film_abel_kernelmix_latest` | 0.9765 | 0.1638 | 0.9973 | 0.0735 | 0.9983 | 0.1239 |
 | `kernelmix_causal_preview_no_retrain` | 0.9961 | 0.0671 | 0.9973 | 0.0735 | 0.9983 | 0.0507 |
 | `kernelmix_causalconv_preview_no_retrain` | 0.9949 | 0.0763 | 0.9973 | 0.0735 | 0.9983 | 0.0577 |
+| `kernelmix_causalhybrid_preview_no_retrain` | 0.9969 | 0.0596 | 0.9973 | 0.0735 | 0.9983 | 0.0451 |
+| `kernelmix_causalhybrid_500ep` | 0.9967 | 0.0611 | 0.9974 | 0.0724 | 0.9983 | 0.0462 |
 
 The `*_preview_no_retrain` rows use the existing KernelMix checkpoint with the
 new correction structure applied at evaluation time.  They are direction checks,
@@ -286,22 +383,89 @@ with endpoint subtraction so it does not directly overwrite the interface or
 far-field values.  This is the stricter follow-up after the causal gate: it
 targets the remaining reversal-line discontinuity-like band.
 
+### Film-Abel KernelMix causal-hybrid warm start
+
+To combine causal-convolution continuity with a small diffusion-gated direct
+residual, run:
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!bash run_colab_film_abel_kernelmix_causalhybrid_256x64.sh
+```
+
+This runs `multiscale_green_grid_film_abel_kernelmix_causalhybrid`:
+
+```text
+C_dyn = C_causalconv + 0.25 * C_direct_gated
+```
+
+The preview check gives the best no-retrain full-field score so far while
+keeping the reversal jump close to the pure causal-convolution version.
+
+### Film-Abel KernelMix causal-hybrid-smooth warm start
+
+The causal-hybrid 500-epoch diagnostic showed that the remaining vertical
+reversal band is dominated by the direct dynamic residual, not by the diffusion
+gate or the causal-convolution branch.  To reduce that switch-like behavior, run:
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!bash run_colab_film_abel_kernelmix_causalhybrid_smooth_256x64.sh
+```
+
+This runs `multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth`:
+
+```text
+C_dyn = C_causalconv + 0.05 * C_direct_gated
+```
+
+and adds lightweight finite-difference smoothness penalties for:
+
+- direct dynamic reversal jump,
+- direct dynamic temporal curvature near reversal,
+- static residual temporal curvature near reversal,
+- Film-Abel phase temporal curvature near reversal.
+
+### Clean Film-TraceGreen final run
+
+Use this for the final paper-facing architecture and future parameter
+generalization experiments:
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!bash run_colab_film_tracegreen_clean_256x64.sh
+```
+
+By default the script warms from the best TraceGreen checkpoint if available:
+
+```text
+runs_film_abel_kernelmix_tracegreen_256x64/20260705_081613/checkpoints/
+```
+
+For a short check:
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!EPOCHS=100 SAVE_EVERY=100 FDM_COMPARE_EVERY=100 \
+  bash run_colab_film_tracegreen_clean_256x64.sh
+```
+
 ## Posterior Evaluation
 
 ```bash
 PYTHONIOENCODING=utf-8 python -u compare_concentration_fields.py \
-  --arch multiscale_green_grid_film_abel \
+  --arch multiscale_film_tracegreen_clean \
   --input-mode normalized \
-  --checkpoint checkpoints_film_abel_v1/pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_best.pth \
+  --checkpoint runs_film_tracegreen_clean_256x64/<timestamp>/checkpoints/pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_best.pth \
   --fdm-pkl ../FDM/kcat1_v42_thin_layer_catalytic_v42.pkl \
   --green-time-grid 256 \
   --green-kernel-points 64 \
   --n-time 160 \
   --n-x-in 120 \
   --n-x-out 160 \
-  --output-json analysis_film_abel_direct_v1/film_abel_best_55000_metrics.json \
-  --output-npz analysis_film_abel_direct_v1/film_abel_best_55000_fields.npz \
-  --output-figure analysis_film_abel_direct_v1/film_abel_best_55000_residual_summary.png
+  --output-json analysis_film_tracegreen_clean/metrics.json \
+  --output-npz analysis_film_tracegreen_clean/fields.npz \
+  --output-figure analysis_film_tracegreen_clean/residual_summary.png
 ```
 
 ## Direct FDM/PINN Plots
