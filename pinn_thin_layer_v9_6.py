@@ -106,6 +106,8 @@ MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALHYBRID_INTMEMORY_PATH 
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_CAUSALHYBRID_INTMEMORY_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_FLUXTRACE_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_fluxtrace.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_FLUXTRACE_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_fluxtrace_best.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_TRACEGREEN_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_tracegreen.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_TRACEGREEN_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_tracegreen_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema_best.pth'
 MODEL_V96_MULTISCALE_BUFFER_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_buffer.pth'
@@ -177,6 +179,9 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     elif arch == "multiscale_green_grid_film_abel_kernelmix_fluxtrace":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_FLUXTRACE_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_FLUXTRACE_BEST_PATH
+    elif arch == "multiscale_green_grid_film_abel_kernelmix_tracegreen":
+        current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_TRACEGREEN_PATH
+        best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_TRACEGREEN_BEST_PATH
     elif arch == "multiscale_green_grid_film_abel_ema":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH
@@ -2437,6 +2442,158 @@ class ExternalNet_v9_6_MultiscaleGreenGridFluxTrace(ExternalNet_v9_6_MultiscaleG
         return C_C, C_D
 
 
+class ExternalNet_v9_6_MultiscaleGreenGridFilmTrace(ExternalNet_v9_6_MultiscaleGreenGridHybrid):
+    """Film-Abel trace-driven external reconstruction.
+
+    FluxTrace showed that using two independent traces,
+
+        C_D_int^film(t) and G_flux[J](0,t),
+
+    then sewing them together with an h00 correction makes the external PDE
+    stiff.  This ablation keeps the successful Film-Abel/interface-memory trace
+    and propagates it into the external region with the heat-equation Dirichlet
+    boundary potential.  The external field therefore has one boundary source:
+
+        C_D(0,t) = C_D_int^film(t).
+
+    A far-boundary Hermite value correction and endpoint-vanishing residual are
+    still allowed, but they cannot alter the interface value.
+    """
+
+    def __init__(
+        self,
+        gamma_val,
+        interface_state=None,
+        normalize_inputs=True,
+        time_grid_points=256,
+        kernel_points=64,
+        history_grad=True,
+        cache_history=True,
+    ):
+        super().__init__(
+            gamma_val,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+            time_grid_points=time_grid_points,
+            kernel_points=kernel_points,
+            history_grad=history_grad,
+            cache_history=cache_history,
+        )
+        self.tracegreen_external = True
+        self.external_analytic_boundary_flux = True
+        self.tracegreen_far_beta_raw = nn.Parameter(torch.tensor([-2.0], dtype=torch.float32))
+        self.register_buffer(
+            "tracegreen_residual_scales",
+            torch.tensor([2.0, 1.25, 1.25, 1.5, 1.25], dtype=torch.float32).reshape(1, 5),
+        )
+
+    def tracegreen_far_beta(self):
+        return 1.0 + 7.0 * torch.sigmoid(self.tracegreen_far_beta_raw)
+
+    def tracegreen_coordinate(self, T_raw, X_raw):
+        ext_length = X_ext_max - delta
+        y = torch.clamp(X_raw - delta, 0.0, ext_length)
+        r = torch.clamp(y / ext_length, 0.0, 1.0)
+        beta = self.tracegreen_far_beta().to(device=T_raw.device, dtype=T_raw.dtype)
+        exp_neg_beta = torch.exp(-beta)
+        denom = torch.clamp(1.0 - exp_neg_beta, min=1e-5)
+        z = torch.clamp((1.0 - torch.exp(-beta * r)) / denom, 0.0, 1.0)
+        return y, r, z, beta
+
+    def _trace_history_grid(self, T_ref):
+        wants_grad = self.history_grad and torch.is_grad_enabled()
+        if hasattr(self.interface_state, "_history_grid"):
+            if wants_grad:
+                history = self.interface_state._history_grid(T_ref)
+                c_d_grid = history.get("C_D_int")
+                if c_d_grid is None:
+                    c_d_grid = self.gamma - history["C_C_int"]
+            else:
+                with torch.no_grad():
+                    history = self.interface_state._history_grid(T_ref)
+                    c_d_grid = history.get("C_D_int")
+                    if c_d_grid is None:
+                        c_d_grid = self.gamma - history["C_C_int"]
+                if torch.is_grad_enabled():
+                    c_d_grid = c_d_grid.detach()
+            return c_d_grid
+
+        t_grid = self.time_grid.to(device=T_ref.device, dtype=T_ref.dtype)
+        if wants_grad:
+            state = self.interface_state(t_grid)
+            return self.gamma - state["C_C_int"]
+        with torch.no_grad():
+            state = self.interface_state(t_grid)
+            c_d_grid = self.gamma - state["C_C_int"]
+        return c_d_grid.detach() if torch.is_grad_enabled() else c_d_grid
+
+    def trace_boundary_convolution_fused(self, T_raw, y):
+        """Dirichlet heat-potential propagation of Film-Abel C_D_int(t)."""
+        t_pos = torch.clamp(T_raw, min=1e-6 * T_sim)
+        nodes = self.kernel_nodes.reshape(1, -1).to(device=T_raw.device, dtype=T_raw.dtype)
+        tau = t_pos * nodes
+        dt = torch.clamp(t_pos * (1.0 - nodes), min=1e-6 * T_sim)
+
+        c_d_grid = self._trace_history_grid(T_raw)
+        c_d_tau = self._interp_history(tau, c_d_grid)
+        current_state = self.interface_state(T_raw)
+        c_d_int = self.gamma - current_state["C_C_int"]
+
+        ext_length = X_ext_max - delta
+        y_triplet = torch.cat([
+            torch.clamp(y, min=0.0),
+            torch.zeros_like(y),
+            torch.ones_like(y) * ext_length,
+        ], dim=1)
+        y_mat = y_triplet.unsqueeze(-1).expand(-1, -1, self.kernel_points)
+        dt_mat = dt.unsqueeze(1)
+        trace_mat = c_d_tau.unsqueeze(1)
+
+        diffusion = torch.as_tensor(D_rel_D, device=T_raw.device, dtype=T_raw.dtype)
+        kernel = y_mat * torch.exp(-(y_mat ** 2) / (4.0 * diffusion * dt_mat))
+        kernel = kernel / torch.sqrt(torch.clamp(4.0 * np.pi * diffusion * dt_mat ** 3, min=1e-12))
+        c_d = T_raw.unsqueeze(1) * torch.mean(trace_mat * kernel, dim=2, keepdim=True)
+        c_d = c_d.squeeze(-1)
+
+        # The continuous Dirichlet kernel has trace C_D_int at y=0, but the
+        # pointwise quadrature formula has a y prefactor.  Restore the analytic
+        # boundary trace for interface evaluation and hard endpoint matching.
+        c_d_int_triplet = c_d_int.expand(-1, y_triplet.shape[1])
+        c_d = torch.where(y_triplet <= 1e-10, c_d_int_triplet, c_d)
+        return c_d
+
+    def tracegreen_residual_correction(self, T_raw, z, x_net):
+        raw = self.residual_raw(x_net)
+        modes = self.residual_modes(z)
+        time_gate = torch.clamp(T_raw / T_sim, 0.0, 1.0)
+        scales = self.tracegreen_residual_scales.to(device=raw.device, dtype=raw.dtype)
+        return time_gate * torch.sum(scales * modes * torch.tanh(raw), dim=1, keepdim=True)
+
+    def forward(self, x_input):
+        T_raw = x_input[:, 0:1]
+        X_raw = x_input[:, 1:2]
+        if self.normalize_inputs:
+            x_net = torch.cat([normalize_time(T_raw), normalize_ext_x(X_raw)], dim=1)
+        else:
+            x_net = x_input
+
+        y, _, z, _ = self.tracegreen_coordinate(T_raw, X_raw)
+        c_d_all = self.trace_boundary_convolution_fused(T_raw, y)
+        c_d_trace = c_d_all[:, 0:1]
+        c_d_far = c_d_all[:, 2:3]
+
+        z2 = z * z
+        z3 = z2 * z
+        h01 = -2.0 * z3 + 3.0 * z2
+
+        c_d_base = c_d_trace + h01 * (torch.zeros_like(c_d_far) - c_d_far)
+        residual = self.tracegreen_residual_correction(T_raw, z, x_net)
+
+        C_D = c_d_base + residual
+        C_C = self.gamma - C_D
+        return C_C, C_D
+
+
 class ExternalNet_v9_6_MultiscaleGreenGridMemory(ExternalNet_v9_6_MultiscaleGreenGridDynamic):
     """Dynamic Green-grid model with causal memory and coordinate-safe basis.
 
@@ -3175,6 +3332,24 @@ def create_models_v96(
                 cache_history=green_cache_history,
             ),
         )
+    if arch == "multiscale_green_grid_film_abel_kernelmix_tracegreen":
+        interface_state = InterfaceStateNet_v9_6_FilmAbelKernelMixCausalHybridIntMemory(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        return (
+            ThinLayerNet_v9_6_MultiscaleHermite(interface_state=interface_state, normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6_MultiscaleGreenGridFilmTrace(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
     if arch == "multiscale_green_grid_film_abel_ema":
         interface_state = InterfaceStateNet_v9_6_FilmAbelEMA(
             normalize_inputs=normalize_inputs,
@@ -3377,7 +3552,10 @@ def verify_interface_physics(model_thin, model_ext, device, n_test=50):
         J_rxn = k_cat_star * C_B_int * C_C_int
         J_A = -D_rel_A * C_A_X_int
         J_B = -D_rel_B * C_B_X_int
-        if getattr(model_ext, "fluxtrace_analytic_boundary_flux", False):
+        if (
+            getattr(model_ext, "fluxtrace_analytic_boundary_flux", False) or
+            getattr(model_ext, "external_analytic_boundary_flux", False)
+        ):
             # FluxTrace treats the external boundary flux as the analytic trace
             # of the Green flux solution.  Pointwise autograd at y=0 only sees
             # the regular quadrature part and misses the singular boundary
@@ -3860,6 +4038,15 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 f"beta={beta:.3f}, trace_w={float(model_ext.fluxtrace_trace_weight):.1f}, "
                 f"residual_scales={scales}"
             )
+        if getattr(model_ext, "tracegreen_external", False):
+            beta = float(model_ext.tracegreen_far_beta().detach().cpu())
+            scales = model_ext.tracegreen_residual_scales.detach().cpu().numpy().reshape(-1).tolist()
+            print(
+                " 16. Film-Abel TraceGreen external field: "
+                "C_D=HeatDirichlet[C_D_int^film](x,t)+h01*(0-D_far)+R_smooth; "
+                "single Film-Abel boundary trace, no G_flux(0)-Film trace sewing; "
+                f"far_beta={beta:.3f}, residual_scales={scales}"
+            )
     print(f"{'='*80}")
 
     train_wall_start = time.time()
@@ -4034,7 +4221,9 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         flux_D_res = -D_rel_D * C_D_X_int - J_rxn
 
         loss_interface_thin = torch.mean(flux_A_res**2) + torch.mean(flux_B_res**2)
-        if getattr(model_ext, "fluxtrace_analytic_boundary_flux", False):
+        if getattr(model_ext, "tracegreen_external", False):
+            loss_interface_ext = torch.mean((C_C_int + C_D_int - gamma) ** 2)
+        elif getattr(model_ext, "fluxtrace_analytic_boundary_flux", False):
             # The flux Green term satisfies the boundary flux in analytic trace
             # sense.  Autograd at y=0 evaluates the regular part of the kernel
             # and misses the singular t-tau -> 0 contribution, so using it here
@@ -4893,7 +5082,7 @@ if __name__ == "__main__":
                         help="Use raw coordinates for old v9.6 checkpoints.")
     parser.add_argument("--cv-points", type=int, default=8000)
     parser.add_argument("--fdm-csv", default="../FDM/kcat1_v42_cv_data_v42.csv")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256,
                         help="Global history time-grid size for multiscale_green_grid.")
     parser.add_argument("--green-kernel-points", type=int, default=32,
