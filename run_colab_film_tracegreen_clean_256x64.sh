@@ -73,6 +73,7 @@ resolve_resume_ckpt() {
     fi
 
     local patterns=(
+        "./runs_film_tracegreen_clean_two_stage_256x64 pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_dynamic_stage1_best.pth"
         "./runs_film_abel_kernelmix_tracegreen_256x64/20260705_081613 pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_tracegreen_best.pth"
         "./runs_film_abel_kernelmix_tracegreen_256x64 pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_tracegreen_best.pth"
         "./runs_film_abel_kernelmix_tracegreen_256x64 pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_tracegreen.pth"

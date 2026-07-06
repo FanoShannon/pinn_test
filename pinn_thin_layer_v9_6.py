@@ -86,6 +86,8 @@ MODEL_V96_MULTISCALE_GREEN_GRID_HYBRID_PATH = './pinn_thin_layer_catalytic_v9_6_
 MODEL_V96_MULTISCALE_GREEN_GRID_HYBRID_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_hybrid_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_DYNAMIC_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_dynamic.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_DYNAMIC_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_dynamic_best.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_DYNAMIC_STAGE1_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_dynamic_stage1.pth'
+MODEL_V96_MULTISCALE_GREEN_GRID_DYNAMIC_STAGE1_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_dynamic_stage1_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_INTERFACE_MEMORY_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_interface_memory.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_INTERFACE_MEMORY_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_interface_memory_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_MEMORY_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_memory.pth'
@@ -155,6 +157,9 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     elif arch == "multiscale_green_grid_dynamic":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_DYNAMIC_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_DYNAMIC_BEST_PATH
+    elif arch == "multiscale_green_grid_dynamic_stage1":
+        current_path = MODEL_V96_MULTISCALE_GREEN_GRID_DYNAMIC_STAGE1_PATH
+        best_path = MODEL_V96_MULTISCALE_GREEN_GRID_DYNAMIC_STAGE1_BEST_PATH
     elif arch == "multiscale_green_grid_interface_memory":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_INTERFACE_MEMORY_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_INTERFACE_MEMORY_BEST_PATH
@@ -2368,6 +2373,69 @@ class ExternalNet_v9_6_MultiscaleGreenGridDynamic(ExternalNet_v9_6_MultiscaleGre
         return C_C, C_D
 
 
+class ExternalNet_v9_6_MultiscaleGreenGridDynamicStage1(ExternalNet_v9_6_MultiscaleGreenGridDynamic):
+    """Fixed clean warm-start external model for the two-stage workflow.
+
+    Stage 1 should prepare a reproducible initial state for the final
+    Film-TraceGreen model, not solve the paper-facing C_C/C_D field by adding
+    many experiment-specific corrections.  This class keeps the useful signed
+    full-field Green history and dynamic physical inputs, but removes the
+    hybrid-only extra spatial modes and uses a smaller three-mode dynamic
+    correction.  Stage 2 then takes over with the Film-Abel interface chain and
+    the erfc trace-preserving TraceGreen lift.
+    """
+
+    def __init__(
+        self,
+        gamma_val,
+        interface_state=None,
+        normalize_inputs=True,
+        time_grid_points=256,
+        kernel_points=64,
+        history_grad=True,
+        cache_history=True,
+    ):
+        super().__init__(
+            gamma_val,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+            time_grid_points=time_grid_points,
+            kernel_points=kernel_points,
+            history_grad=history_grad,
+            cache_history=cache_history,
+        )
+        self.stage1_clean_warmstart = True
+        self.hybrid_lite = False
+
+        # The parent dynamic model was introduced after Hybrid-lite and still
+        # constructs two extra spatial modes.  Keep checkpoint compatibility but
+        # remove those modes from the stage1 forward path.
+        if hasattr(self, "shape_extra_net"):
+            for param in self.shape_extra_net.parameters():
+                param.requires_grad_(False)
+
+        self.dynamic_net = MultiscaleResidualHead(out_features=3, width=160, depth=3, in_features=7)
+        nn.init.zeros_(self.dynamic_net.net[-1].weight)
+        nn.init.zeros_(self.dynamic_net.net[-1].bias)
+        self.correction_scales = torch.tensor([8.0, 6.0, 6.0], dtype=torch.float32).reshape(1, 3)
+        self.dynamic_correction_scales = torch.tensor([3.0, 2.0, 2.0], dtype=torch.float32).reshape(1, 3)
+
+    def residual_raw(self, x_net):
+        return ExternalNet_v9_6_MultiscaleGreenGrid.residual_raw(self, x_net)
+
+    def residual_modes(self, z):
+        return ExternalNet_v9_6_MultiscaleGreenGrid.residual_modes(self, z)
+
+    def dynamic_modes(self, r):
+        r2 = r * r
+        window = r * (1.0 - r)
+        return torch.cat([
+            window,
+            window * (2.0 * r - 1.0),
+            window * (6.0 * r2 - 6.0 * r + 1.0),
+        ], dim=1)
+
+
 class ExternalNet_v9_6_MultiscaleGreenGridDynamicCausalConv(ExternalNet_v9_6_MultiscaleGreenGridDynamic):
     """Dynamic correction as a causal heat-kernel convolution.
 
@@ -3418,6 +3486,21 @@ def create_models_v96(
                 cache_history=green_cache_history,
             ),
         )
+    if arch == "multiscale_green_grid_dynamic_stage1":
+        interface_state = InterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
+        interface_state.continuous_time_features = True
+        return (
+            ThinLayerNet_v9_6_MultiscaleHermite(interface_state=interface_state, normalize_inputs=normalize_inputs),
+            ExternalNet_v9_6_MultiscaleGreenGridDynamicStage1(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
     if arch == "multiscale_green_grid_interface_memory":
         interface_state = InterfaceStateNet_v9_6_Memory(
             normalize_inputs=normalize_inputs,
@@ -4265,6 +4348,13 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 "  9. Hybrid-lite residual: "
                 f"modes={model_ext.correction_scales.numel()}, "
                 f"scales={model_ext.correction_scales.detach().cpu().numpy().reshape(-1).tolist()}"
+            )
+        if getattr(model_ext, "stage1_clean_warmstart", False):
+            print(
+                "  9. Stage1 fixed warm-start: "
+                "signed full-field Green + 3 smooth residual modes + "
+                "3 dynamic physical-input modes; no Film-Abel, KernelMix, "
+                "matched Abel, interface residual, or hybrid extra modes."
             )
         if getattr(model_ext, "dynamic_lite", False):
             print(
@@ -5446,7 +5536,7 @@ if __name__ == "__main__":
                         help="Use raw coordinates for old v9.6 checkpoints.")
     parser.add_argument("--cv-points", type=int, default=8000)
     parser.add_argument("--fdm-csv", default="../FDM/kcat1_v42_cv_data_v42.csv")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256,
                         help="Global history time-grid size for multiscale_green_grid.")
     parser.add_argument("--green-kernel-points", type=int, default=32,

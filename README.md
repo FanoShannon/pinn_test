@@ -6,7 +6,7 @@ evaluation and plotting.  It is not used in the training loss.
 
 ## Current Branch
 
-`codex/film-abel-interface`
+`codex/fluxtrace-green`
 
 Main code files:
 
@@ -17,17 +17,75 @@ Main code files:
 
 ## Final Clean Architecture
 
-The current paper-facing architecture is:
+The current paper-facing workflow is a fixed two-stage clean pipeline:
 
 ```text
-multiscale_film_tracegreen_clean
+Stage 1: multiscale_green_grid_dynamic_stage1
+Stage 2: multiscale_film_tracegreen_clean
 ```
 
-It is a cleaned-up version of the best TraceGreen branch.  It keeps the pieces
-that produced clear gains and removes exploratory correction paths that were
-useful for diagnosis but make the final story hard to defend.
+Stage 1 is a reproducible warm-start model.  It prepares stable `C_A/C_B`,
+`C_B_int`, `J_rxn`, and coarse external fields without carrying over the many
+exploratory correction branches.  Stage 2 is the paper-facing model: Film-Abel
+interface memory plus erfc trace-preserving TraceGreen external propagation.
 
-### Mathematical Form
+### Stage 1: Fixed Dynamic Green Warm Start
+
+The fixed warm-start architecture is:
+
+```text
+multiscale_green_grid_dynamic_stage1
+```
+
+It keeps the original learnable interface-state network:
+
+```text
+C_B_int(t), C_C_int(t), J_rxn(t) = InterfaceStateNet(t)
+J_rxn(t) = k_cat*C_B_int(t)*C_C_int(t)
+```
+
+The external field is initialized by signed full-field Green history:
+
+```text
+C_D^G(y,t) = int_0^t J_rxn(tau) K(y,t-tau) dtau
+```
+
+and a small fixed residual scaffold:
+
+```text
+C_D(y,t) =
+    C_D^G(y,t)
+  + Hermite endpoint corrections
+  + R_3(y,t)
+  + R_dyn,3(y,t,theta,dtheta/dt,J_rxn,dJ_rxn/dt,Q_rxn)
+
+C_C(y,t) = gamma - C_D(y,t)
+```
+
+where `R_3` and `R_dyn,3` each use only three endpoint-compatible modes.  This
+removes the old Hybrid-lite extra spatial modes and keeps Stage 1 from becoming
+a competing final `C_C/C_D` solver.
+
+Stage 1 removes:
+
+```text
+Film-Abel interface memory
+KernelMix beta terms
+matched/mixed Abel
+interface residual r_int
+hybrid extra spatial modes
+TraceGreen boundary lift
+```
+
+Stage 1 should be judged mainly by:
+
+```text
+C_A/C_B, C_B_int, CV_J, and stability of J_rxn(t)
+```
+
+not by final `C_C/C_D` accuracy.
+
+### Stage 2: Clean Film-TraceGreen
 
 Thin-layer conservation is hard constrained:
 
@@ -86,6 +144,22 @@ lim_{y -> 0+} G_trace_erfc[C_D_int](y,t) = C_D_int(t)
 This removed the nonphysical discontinuity between the interface point and the
 first external grid point that appeared with ordinary time quadrature.
 
+### Recommended Clean Training Schedule
+
+The recommended clean run is:
+
+```text
+1. Train Stage 1 from scratch.
+2. Save Stage 1 current and best checkpoints.
+3. Warm-start Stage 2 from Stage 1 best.
+4. Enable R_smooth early with s_train=1.
+5. Linearly decay s_train to 0.
+6. Use the Stage 2 best checkpoint for posterior FDM evaluation.
+```
+
+This keeps the whole experiment "from zero" while avoiding random-initialized
+Film-Abel/TraceGreen instability.
+
 ### What Is Kept
 
 | Component | Status | Reason |
@@ -121,6 +195,7 @@ first external grid point that appeared with ordinary time quadrature.
 | Hermite/extbasis | `multiscale_hermite_extbasis` | Hermite thin layer and external basis | `checkpoints_hermite_extbasis_v1/...pth` | Better interface handling, but `C_C_int` remains limited. |
 | Green grid hybrid | `multiscale_green_grid_hybrid` | Signed full-field Green history plus residual modes | `checkpoints_green_grid_hybrid_v1/..._best.pth` | Improves full-field `C_C`, but `C_C_int` remains a bottleneck. |
 | Dynamic Green | `multiscale_green_grid_dynamic` | Adds dynamic inputs: `theta`, `dtheta/dt`, `J`, `dJ/dt`, `Q` | `checkpoints_green_grid_dynamic_v1/..._best.pth` | Stronger reverse-scan behavior; representative metrics below. |
+| Dynamic Green fixed Stage1 | `multiscale_green_grid_dynamic_stage1` | Fixed warm-start version: signed Green plus three residual modes and three dynamic modes | `runs_film_tracegreen_clean_two_stage_256x64/<timestamp>/stage1_dynamic_fixed/...` | Reproducible Stage1 for clean Film-TraceGreen training. |
 | Interface memory | `multiscale_green_grid_interface_memory` | Adds memory correction to the interface state | `checkpoints_green_grid_interface_memory_v1/...pth` | Modest `C_C/C_D` gain, still not enough for `C_C_int`. |
 | Film-Abel interface | `multiscale_green_grid_film_abel` | Replaces black-box interface source with quasi-steady film transfer plus Abel memory | `checkpoints_film_abel_v1/..._best.pth` and current `.pth` | Large `C_C_int` and CV improvement. Full-field `C_C` becomes limited by spatial propagation. |
 | Film-Abel KernelMix | `multiscale_green_grid_film_abel_kernelmix` | Lets Abel and finite-memory kernels compete inside the interface prior | `runs_film_abel_kernelmix_256x64/<timestamp>/...` | Targets the reverse-scan `C_C_int` peak without starting from the EMA branch. |
@@ -435,37 +510,55 @@ and adds lightweight finite-difference smoothness penalties for:
 
 ### Clean Film-TraceGreen final run
 
-Use this for the final paper-facing architecture and future parameter
-generalization experiments:
+Use this for the complete paper-facing cleaned two-stage architecture and future
+parameter generalization experiments:
 
 ```bash
 %cd /content/gdrive/MyDrive/pinn_v96
-!bash run_colab_film_tracegreen_clean_256x64.sh
+!git fetch origin
+!git checkout codex/fluxtrace-green
+!git pull --ff-only origin codex/fluxtrace-green
+
+!bash run_colab_clean_two_stage_256x64.sh
 ```
 
-By default the script warms from the best TraceGreen checkpoint if available:
+Useful overrides:
 
-```text
-runs_film_abel_kernelmix_tracegreen_256x64/20260705_081613/checkpoints/
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!STAGE1_EPOCHS=5000 STAGE2_EPOCHS=1500 \
+  CLEAN_RESIDUAL_INITIAL_SCALE=1.0 CLEAN_RESIDUAL_DECAY_EPOCHS=1000 \
+  SAVE_EVERY=250 FDM_COMPARE_EVERY=250 \
+  bash run_colab_clean_two_stage_256x64.sh
 ```
 
 For a short check:
 
 ```bash
 %cd /content/gdrive/MyDrive/pinn_v96
-!EPOCHS=100 SAVE_EVERY=100 FDM_COMPARE_EVERY=100 \
-  bash run_colab_film_tracegreen_clean_256x64.sh
+!STAGE1_EPOCHS=500 STAGE2_EPOCHS=500 \
+  CLEAN_RESIDUAL_INITIAL_SCALE=1.0 CLEAN_RESIDUAL_DECAY_EPOCHS=300 \
+  SAVE_EVERY=100 FDM_COMPARE_EVERY=100 \
+  bash run_colab_clean_two_stage_256x64.sh
 ```
 
-If you warm start clean training from an early dynamic/stage1 checkpoint instead
-of the best TraceGreen checkpoint, enable the external residual as a scaffold and
-decay it:
+If Stage 1 already finished and you only want to rerun Stage 2:
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!SKIP_STAGE1=1 \
+  STAGE1_RESUME_CKPT=/content/gdrive/MyDrive/pinn_v96/runs_film_tracegreen_clean_two_stage_256x64/<timestamp>/stage1_dynamic_fixed/checkpoints/pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_dynamic_stage1_best.pth \
+  STAGE2_EPOCHS=1500 CLEAN_RESIDUAL_INITIAL_SCALE=1.0 CLEAN_RESIDUAL_DECAY_EPOCHS=1000 \
+  bash run_colab_clean_two_stage_256x64.sh
+```
+
+If you only want to run Stage 2 against an explicit checkpoint, use:
 
 ```bash
 %cd /content/gdrive/MyDrive/pinn_v96
 !EPOCHS=1500 SAVE_EVERY=250 FDM_COMPARE_EVERY=250 \
   CLEAN_RESIDUAL_INITIAL_SCALE=1.0 CLEAN_RESIDUAL_DECAY_EPOCHS=1000 \
-  RESUME_CKPT=/content/gdrive/MyDrive/pinn_v96/runs_film_abel_256x64_two_stage/20260701_140415/checkpoints_dynamic_256x64/pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_dynamic_best.pth \
+  RESUME_CKPT=/content/gdrive/MyDrive/pinn_v96/path/to/stage1_or_tracegreen_checkpoint.pth \
   bash run_colab_film_tracegreen_clean_256x64.sh
 ```
 

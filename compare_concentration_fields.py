@@ -136,6 +136,22 @@ def build_models(
             history_grad=green_history_grad,
             cache_history=False,
         )
+    elif arch == "multiscale_green_grid_dynamic_stage1":
+        interface_state = pinn.InterfaceStateNet_v9_6(normalize_inputs=normalize_inputs)
+        interface_state.continuous_time_features = True
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermite(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_MultiscaleGreenGridDynamicStage1(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+            history_grad=green_history_grad,
+            cache_history=False,
+        )
     elif arch == "multiscale_green_grid_interface_memory":
         interface_state = pinn.InterfaceStateNet_v9_6_Memory(
             normalize_inputs=normalize_inputs,
@@ -720,7 +736,7 @@ def main():
     )
     parser.add_argument("--fdm-pkl", default="../FDM/kcat1_v42_thin_layer_catalytic_v42.pkl")
     parser.add_argument("--checkpoint", default="./pinn_thin_layer_catalytic_v9_6_best.pth")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256)
     parser.add_argument("--green-kernel-points", type=int, default=32)
     parser.add_argument("--green-detach-history", action="store_true")
