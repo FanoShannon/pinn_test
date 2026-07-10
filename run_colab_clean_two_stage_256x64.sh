@@ -28,6 +28,8 @@ MAX_TRAIN_POINTS="${MAX_TRAIN_POINTS:-9000}"
 SAVE_EVERY="${SAVE_EVERY:-250}"
 PROGRESS_EVERY="${PROGRESS_EVERY:-25}"
 EMPTY_CACHE_EVERY="${EMPTY_CACHE_EVERY:-100}"
+GAMMA="${GAMMA:-10.0}"
+K_CAT_STAR="${K_CAT_STAR:-1.0}"
 
 STAGE1_ARCH="multiscale_green_grid_dynamic_stage1"
 STAGE1_EPOCHS="${STAGE1_EPOCHS:-5000}"
@@ -93,6 +95,8 @@ compare_one() {
     log "Running final posterior concentration compare for ${label}: ${ckpt}"
     "$PYTHON" -u compare_concentration_fields.py \
         --arch "$arch" \
+        --gamma "$GAMMA" \
+        --k-cat-star "$K_CAT_STAR" \
         --input-mode normalized \
         --checkpoint "$ckpt" \
         --fdm-pkl "$FDM_PKL" \
@@ -115,6 +119,7 @@ log "run_root=${RUN_ROOT}"
 log "stage1=${STAGE1_ARCH}, epochs=${STAGE1_EPOCHS}, lr=${STAGE1_LR}"
 log "stage2=${STAGE2_ARCH}, epochs=${STAGE2_EPOCHS}, lr=${STAGE2_LR}"
 log "green M=${GREEN_TIME_GRID}, K=${GREEN_KERNEL_POINTS}"
+log "physical parameters: gamma=${GAMMA}, k_cat_star=${K_CAT_STAR}"
 log "clean residual scale=${CLEAN_RESIDUAL_INITIAL_SCALE} -> 0 over ${CLEAN_RESIDUAL_DECAY_EPOCHS} epochs"
 log "python=$($PYTHON --version 2>&1)"
 log "=================================================="
@@ -141,6 +146,8 @@ else
     stage1_cmd=(
         "$PYTHON" -u pinn_thin_layer_v9_6.py
         --arch "$STAGE1_ARCH"
+        --gamma "$GAMMA"
+        --k-cat-star "$K_CAT_STAR"
         --epochs "$STAGE1_EPOCHS"
         --reset-optimizer-state
         --reset-best-score
@@ -178,6 +185,8 @@ log "Stage1 best checkpoint for stage2: ${STAGE1_BEST}"
 stage2_cmd=(
     "$PYTHON" -u pinn_thin_layer_v9_6.py
     --arch "$STAGE2_ARCH"
+    --gamma "$GAMMA"
+    --k-cat-star "$K_CAT_STAR"
     --epochs "$STAGE2_EPOCHS"
     --resume-checkpoint "$STAGE1_BEST"
     --reset-optimizer-state

@@ -516,8 +516,8 @@ parameter generalization experiments:
 ```bash
 %cd /content/gdrive/MyDrive/pinn_v96
 !git fetch origin
-!git checkout codex/fluxtrace-green
-!git pull --ff-only origin codex/fluxtrace-green
+!git checkout codex/parameter-scale-consistency
+!git pull --ff-only origin codex/parameter-scale-consistency
 
 !bash run_colab_clean_two_stage_256x64.sh
 ```
@@ -531,6 +531,36 @@ Useful overrides:
   SAVE_EVERY=250 FDM_COMPARE_EVERY=250 \
   bash run_colab_clean_two_stage_256x64.sh
 ```
+
+For an independent fixed-parameter run, generate a matching FDM file on the
+same external domain, then pass the physical parameters to both stages:
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!GAMMA=1.0 K_CAT_STAR=1.0 \
+  FDM_PKL=/content/gdrive/MyDrive/FDM/gamma1_k1_v42_thin_layer_catalytic_v42.pkl \
+  STAGE1_EPOCHS=5000 STAGE2_EPOCHS=1500 \
+  CLEAN_RESIDUAL_INITIAL_SCALE=1.0 CLEAN_RESIDUAL_DECAY_EPOCHS=1000 \
+  SAVE_EVERY=250 FDM_COMPARE_EVERY=250 \
+  bash run_colab_clean_two_stage_256x64.sh
+```
+
+`gamma` and `k_cat_star` are fixed run configuration values here; they are not
+learned and are not conditional neural-network inputs.  Checkpoints and FDM
+metadata are validated before loading, so a `gamma=10, k=1` checkpoint cannot be
+silently reused for another physical problem.
+
+Parameter-scale consistency in this branch:
+
+- FDM and PINN both use `L_ext=6*sqrt(T_sim)`, independent of concentration amplitude.
+- External PDE/IC/far-field/bounds residuals use `C/gamma` scaling while retaining
+  the original `gamma=10` numerical weight calibration.
+- Interface flux residuals use
+  `J_ref=k*gamma/(1+k*delta*gamma/D_B)` scaling.
+- Stage 1 predicts fractional, rather than absolute, `C_C_int` depletion and its
+  external correction amplitudes scale with `gamma`.
+- Clean Stage 2 maps the Film-Abel prior into `(0,gamma)` with a differentiable
+  softplus-ratio map instead of a hard clamp.
 
 For a short check:
 
@@ -567,9 +597,11 @@ If you only want to run Stage 2 against an explicit checkpoint, use:
 ```bash
 PYTHONIOENCODING=utf-8 python -u compare_concentration_fields.py \
   --arch multiscale_film_tracegreen_clean \
+  --gamma 1.0 \
+  --k-cat-star 1.0 \
   --input-mode normalized \
   --checkpoint runs_film_tracegreen_clean_256x64/<timestamp>/checkpoints/pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_best.pth \
-  --fdm-pkl ../FDM/kcat1_v42_thin_layer_catalytic_v42.pkl \
+  --fdm-pkl ../FDM/gamma1_k1_v42_thin_layer_catalytic_v42.pkl \
   --green-time-grid 256 \
   --green-kernel-points 64 \
   --n-time 160 \

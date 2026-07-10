@@ -450,6 +450,7 @@ def build_models(
 
 def load_checkpoint(model_thin, model_ext, checkpoint):
     state = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    pinn.validate_checkpoint_physical_parameters(state, checkpoint)
     try:
         model_thin.load_state_dict(state["model_thin_state_dict"], strict=True)
         model_ext.load_state_dict(state["model_ext_state_dict"], strict=True)
@@ -457,6 +458,39 @@ def load_checkpoint(model_thin, model_ext, checkpoint):
         pinn.load_compatible_state_dict(model_thin, state["model_thin_state_dict"], "Thin model")
         pinn.load_compatible_state_dict(model_ext, state["model_ext_state_dict"], "External model")
     return state.get("epoch", None)
+
+
+def configure_evaluation_parameters(args, fdm):
+    checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    checkpoint_params = checkpoint.get("parameters", {})
+    fdm_params = fdm.get("params", {})
+
+    gamma_value = args.gamma
+    if gamma_value is None:
+        gamma_value = checkpoint_params.get("gamma", fdm_params.get("gamma", pinn.REFERENCE_GAMMA))
+
+    k_cat_value = args.k_cat_star
+    if k_cat_value is None:
+        k_cat_value = checkpoint_params.get(
+            "k_cat_star",
+            fdm_params.get("k_cat", fdm_params.get("k_cat_star", pinn.REFERENCE_K_CAT_STAR)),
+        )
+
+    pinn.configure_physical_parameters(gamma_value, k_cat_value)
+    pinn.validate_checkpoint_physical_parameters(checkpoint, args.checkpoint)
+
+    expected = {
+        "gamma": float(pinn.gamma),
+        "k_cat": float(pinn.k_cat_star),
+    }
+    for name, active in expected.items():
+        stored = fdm_params.get(name)
+        if stored is None and name == "k_cat":
+            stored = fdm_params.get("k_cat_star")
+        if stored is not None and not np.isclose(float(stored), active, rtol=1e-7, atol=1e-10):
+            raise ValueError(
+                f"FDM/PINN parameter mismatch for {name}: FDM={stored}, PINN={active}."
+            )
 
 
 def select_indices(size, n_select):
@@ -536,6 +570,10 @@ def compare(args):
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
     normalize_inputs = args.input_mode == "normalized"
 
+    with open(args.fdm_pkl, "rb") as handle:
+        fdm = pickle.load(handle)
+    configure_evaluation_parameters(args, fdm)
+
     model_thin, model_ext = build_models(
         args.arch,
         normalize_inputs,
@@ -546,13 +584,16 @@ def compare(args):
     )
     epoch = load_checkpoint(model_thin, model_ext, args.checkpoint)
 
-    with open(args.fdm_pkl, "rb") as handle:
-        fdm = pickle.load(handle)
-
     t_fdm = np.asarray(fdm["t"], dtype=float)
     x_in_fdm = np.asarray(fdm["x_in"], dtype=float)
     x_out_fdm = np.asarray(fdm["x_out"], dtype=float)
     fdm_conc = fdm["concentrations"]
+    if not np.isclose(x_out_fdm[-1], pinn.X_ext_max, rtol=1e-6, atol=1e-8):
+        raise ValueError(
+            "FDM/PINN external-domain mismatch: "
+            f"FDM x_max={x_out_fdm[-1]:.8g}, PINN x_max={pinn.X_ext_max:.8g}. "
+            "Regenerate FDM with a gamma-independent external length."
+        )
 
     t_idx = select_indices(len(t_fdm), args.n_time)
     x_in_idx = select_indices(len(x_in_fdm), args.n_x_in)
@@ -573,15 +614,31 @@ def compare(args):
     pinn_c, pinn_d = predict_pair(model_ext, t_eval, x_out_eval, device, args.batch_size)
     pinn_eval = {"C_A": pinn_a, "C_B": pinn_b, "C_C": pinn_c, "C_D": pinn_d}
 
-    metrics = {name: field_metrics(pinn_eval[name], fdm_eval[name]) for name in ["C_A", "C_B", "C_C", "C_D"]}
-    total_sq = sum(float(np.sum((pinn_eval[name] - fdm_eval[name]) ** 2)) for name in metrics)
-    total_n = sum(pinn_eval[name].size for name in metrics)
+    concentration_names = ["C_A", "C_B", "C_C", "C_D"]
+    metrics = {name: field_metrics(pinn_eval[name], fdm_eval[name]) for name in concentration_names}
+    total_sq = sum(
+        float(np.sum((pinn_eval[name] - fdm_eval[name]) ** 2))
+        for name in concentration_names
+    )
+    total_n = sum(pinn_eval[name].size for name in concentration_names)
     metrics["overall"] = {"rmse": float(np.sqrt(total_sq / total_n))}
+    metrics["C_C_over_gamma"] = field_metrics(
+        pinn_eval["C_C"] / pinn.gamma,
+        fdm_eval["C_C"] / pinn.gamma,
+    )
+    metrics["C_D_over_gamma"] = field_metrics(
+        pinn_eval["C_D"] / pinn.gamma,
+        fdm_eval["C_D"] / pinn.gamma,
+    )
 
     c_b_int_fdm = np.asarray(fdm_conc["C_B"], dtype=float)[np.ix_(t_idx, [len(x_in_fdm) - 1])].reshape(-1)
     c_c_int_fdm = np.asarray(fdm_conc["C_C"], dtype=float)[np.ix_(t_idx, [0])].reshape(-1)
     metrics["C_B_int"] = field_metrics(pinn_b[:, -1], c_b_int_fdm)
     metrics["C_C_int"] = field_metrics(pinn_c[:, 0], c_c_int_fdm)
+    metrics["C_C_int_over_gamma"] = field_metrics(
+        pinn_c[:, 0] / pinn.gamma,
+        c_c_int_fdm / pinn.gamma,
+    )
     metrics["C_C_int_history_note"] = (
         "C_C_int is evaluated from the FDM concentration field C_C[:,0], "
         "not from the stored C_C_int history array, whose first element is uninitialized."
@@ -589,6 +646,11 @@ def compare(args):
     cv_eval = build_cv_eval(model_thin, fdm, device, args.batch_size, args.cv_points)
     if cv_eval is not None:
         metrics["CV_J"] = field_metrics(cv_eval["pinn_J"], cv_eval["fdm_J"])
+        j_ref = pinn.characteristic_reaction_flux()
+        metrics["CV_J_over_J_ref"] = field_metrics(
+            cv_eval["pinn_J"] / j_ref,
+            cv_eval["fdm_J"] / j_ref,
+        )
 
     if args.output_figure:
         plot_residual_summary(
@@ -620,9 +682,13 @@ def compare(args):
     print(f"Epoch: {epoch}")
     print(f"Architecture: {args.arch}")
     print(f"Input mode: {args.input_mode}")
+    print(f"Parameters: gamma={pinn.gamma}, k_cat_star={pinn.k_cat_star}")
     print(f"Device: {device}")
     print("field,rmse,mae,max_abs,bias,r2,nrmse,fdm_min,fdm_max,pinn_min,pinn_max")
-    for name in ["C_A", "C_B", "C_C", "C_D", "C_B_int", "C_C_int"]:
+    for name in [
+        "C_A", "C_B", "C_C", "C_D", "C_B_int", "C_C_int",
+        "C_C_over_gamma", "C_D_over_gamma", "C_C_int_over_gamma",
+    ]:
         row = metrics[name]
         print(
             f"{name},{row['rmse']:.8e},{row['mae']:.8e},{row['max_abs']:.8e},"
@@ -632,13 +698,14 @@ def compare(args):
         )
     print(f"overall_rmse,{metrics['overall']['rmse']:.8e}")
     if "CV_J" in metrics:
-        row = metrics["CV_J"]
-        print(
-            f"CV_J,{row['rmse']:.8e},{row['mae']:.8e},{row['max_abs']:.8e},"
-            f"{row['bias']:.8e},{row['r2']:.8e},{row['nrmse']:.8e},"
-            f"{row['fdm_min']:.8e},{row['fdm_max']:.8e},"
-            f"{row['pinn_min']:.8e},{row['pinn_max']:.8e}"
-        )
+        for name in ["CV_J", "CV_J_over_J_ref"]:
+            row = metrics[name]
+            print(
+                f"{name},{row['rmse']:.8e},{row['mae']:.8e},{row['max_abs']:.8e},"
+                f"{row['bias']:.8e},{row['r2']:.8e},{row['nrmse']:.8e},"
+                f"{row['fdm_min']:.8e},{row['fdm_max']:.8e},"
+                f"{row['pinn_min']:.8e},{row['pinn_max']:.8e}"
+            )
     return metrics
 
 
@@ -736,6 +803,10 @@ def main():
     )
     parser.add_argument("--fdm-pkl", default="../FDM/kcat1_v42_thin_layer_catalytic_v42.pkl")
     parser.add_argument("--checkpoint", default="./pinn_thin_layer_catalytic_v9_6_best.pth")
+    parser.add_argument("--gamma", type=float, default=None,
+                        help="Fixed gamma. Defaults to checkpoint metadata, then FDM metadata.")
+    parser.add_argument("--k-cat-star", type=float, default=None,
+                        help="Fixed k_cat*. Defaults to checkpoint metadata, then FDM metadata.")
     parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256)
     parser.add_argument("--green-kernel-points", type=int, default=32)

@@ -52,19 +52,86 @@ delta = lambda_factor * np.sqrt(T_sim)
 X_ext_factor = 6
 X_ext_max = delta + X_ext_factor * np.sqrt(T_sim)
 
-k_cat_star = 1.0
-gamma = 10.0
+REFERENCE_K_CAT_STAR = 1.0
+REFERENCE_GAMMA = 10.0
+
+k_cat_star = REFERENCE_K_CAT_STAR
+gamma = REFERENCE_GAMMA
 
 D_rel_A = 1.0
 D_rel_B = 1.0
 D_rel_C = 1.0
 D_rel_D = 1.0
 
-print(f"=== PINN v9.6 - Interface Coupling Enhancement ===")
-print(f"Thin layer thickness δ = {delta:.4f}")
-print(f"External region length = {X_ext_max - delta:.4f}")
-print(f"Catalytic constant k_cat* = {k_cat_star}, γ = {gamma}")
-print(f"Simulation time T_sim = {T_sim:.4f}")
+
+def configure_physical_parameters(gamma_value=REFERENCE_GAMMA,
+                                  k_cat_value=REFERENCE_K_CAT_STAR):
+    """Set one fixed physical parameter pair before model construction."""
+    global gamma, k_cat_star
+    gamma_value = float(gamma_value)
+    k_cat_value = float(k_cat_value)
+    if not np.isfinite(gamma_value) or gamma_value <= 0.0:
+        raise ValueError(f"gamma must be finite and positive, got {gamma_value}")
+    if not np.isfinite(k_cat_value) or k_cat_value <= 0.0:
+        raise ValueError(f"k_cat_star must be finite and positive, got {k_cat_value}")
+    gamma = gamma_value
+    k_cat_star = k_cat_value
+
+
+def characteristic_reaction_flux(gamma_value=None, k_cat_value=None):
+    """Film-limited characteristic flux for scale-consistent residuals."""
+    gamma_value = gamma if gamma_value is None else float(gamma_value)
+    k_cat_value = k_cat_star if k_cat_value is None else float(k_cat_value)
+    return (k_cat_value * gamma_value) / (
+        1.0 + k_cat_value * delta * gamma_value / D_rel_B
+    )
+
+
+def external_residual_scale(gamma_value=None):
+    """Reference-calibrated 1/gamma scale; equals one at gamma=10."""
+    gamma_value = gamma if gamma_value is None else float(gamma_value)
+    return REFERENCE_GAMMA / max(gamma_value, 1e-12)
+
+
+def flux_residual_scale(gamma_value=None, k_cat_value=None):
+    """Reference-calibrated 1/J_ref scale; equals one at the v9.6 baseline."""
+    current = characteristic_reaction_flux(gamma_value, k_cat_value)
+    reference = characteristic_reaction_flux(REFERENCE_GAMMA, REFERENCE_K_CAT_STAR)
+    return reference / max(current, 1e-12)
+
+
+def smooth_bounded_concentration(value, upper, transition_fraction=0.01,
+                                 transition_gate=None):
+    """Map a concentration smoothly to ``(0, upper)`` without a hard clamp.
+
+    For values well inside the interval, softplus(value/tau) and
+    softplus((upper-value)/tau) reduce to value/tau and
+    (upper-value)/tau, so the map is approximately the identity.  Outside the
+    interval it approaches the nearest bound while retaining a useful gradient.
+    """
+    upper_t = torch.as_tensor(upper, device=value.device, dtype=value.dtype)
+    gate = 1.0 if transition_gate is None else transition_gate
+    tau = torch.clamp(
+        upper_t * float(transition_fraction) * gate,
+        min=upper_t * 1e-7,
+    )
+    positive_value = F.softplus(value / tau)
+    positive_remaining = F.softplus((upper_t - value) / tau)
+    fraction = positive_value / torch.clamp(
+        positive_value + positive_remaining,
+        min=torch.finfo(value.dtype).eps,
+    )
+    return upper_t * fraction
+
+
+def print_physical_configuration():
+    print("=== PINN v9.6 - Interface Coupling Enhancement ===")
+    print(f"Thin layer thickness delta = {delta:.4f}")
+    print(f"External region length = {X_ext_max - delta:.4f}")
+    print(f"Catalytic constant k_cat* = {k_cat_star}, gamma = {gamma}")
+    print(f"Characteristic film flux J_ref = {characteristic_reaction_flux():.6g}")
+    print(f"Film Damkohler number = {k_cat_star * gamma * delta / D_rel_B:.6g}")
+    print(f"Simulation time T_sim = {T_sim:.4f}")
 
 # ==================== 模型路径 ====================
 MODEL_V95_BEST_PATH = './pinn_thin_layer_catalytic_v9_5_best.pth'
@@ -474,8 +541,13 @@ class InterfaceStateNet_v9_6(nn.Module):
         super().__init__()
         self.normalize_inputs = normalize_inputs
         self.net = MultiscaleResidualHead(out_features=3, width=192, depth=4, in_features=1)
-        self.c_c_depletion_scale = 4.0
-        self.surface_slope_scale = 6.0
+        # At raw=0 this gives the old gamma=10 initialization C_C_int/gamma=0.8,
+        # but unlike the old fixed 4.0-unit depletion it can represent the full
+        # physically admissible fractional range for every gamma.
+        self.c_c_depletion_prior_logit = float(np.log(0.2 / 0.8))
+        # Thin-layer gradients follow the characteristic reaction flux.  Scale
+        # the old baseline range without changing gamma=10, k=1 behavior.
+        self.surface_slope_scale = 6.0 / flux_residual_scale()
 
     def forward(self, T_raw):
         if self.normalize_inputs:
@@ -490,7 +562,11 @@ class InterfaceStateNet_v9_6(nn.Module):
         raw = self.net(t_net)
         c_b_prior_logit = torch.logit(torch.clamp(c_b_surface, 1e-6, 1.0 - 1e-6))
         C_B_int = time_gate * torch.sigmoid(c_b_prior_logit + raw[:, 0:1])
-        C_C_int = gamma - self.c_c_depletion_scale * time_gate * torch.sigmoid(raw[:, 1:2])
+        C_C_int = gamma * (
+            1.0 - time_gate * torch.sigmoid(
+                self.c_c_depletion_prior_logit + raw[:, 1:2]
+            )
+        )
         J_rxn = k_cat_star * C_B_int * C_C_int
         surface_slope = self.surface_slope_scale * time_gate * torch.tanh(raw[:, 2:3])
         return {
@@ -557,7 +633,11 @@ class InterfaceStateNet_v9_6_Memory(InterfaceStateNet_v9_6):
         raw = self.net(t_net)
         c_b_prior_logit = torch.logit(torch.clamp(c_b_surface, 1e-6, 1.0 - 1e-6))
         C_B_int = time_gate * torch.sigmoid(c_b_prior_logit + raw[:, 0:1])
-        C_C_int = gamma - self.c_c_depletion_scale * time_gate * torch.sigmoid(raw[:, 1:2])
+        C_C_int = gamma * (
+            1.0 - time_gate * torch.sigmoid(
+                self.c_c_depletion_prior_logit + raw[:, 1:2]
+            )
+        )
         J_rxn = k_cat_star * C_B_int * C_C_int
         surface_slope = self.surface_slope_scale * time_gate * torch.tanh(raw[:, 2:3])
         return {
@@ -666,8 +746,10 @@ class InterfaceStateNet_v9_6_Memory(InterfaceStateNet_v9_6):
         C_B_int = time_gate * torch.sigmoid(
             base["c_b_prior_logit"] + base["raw"][:, 0:1] + corr[:, 0:1]
         )
-        C_C_int = gamma - self.c_c_depletion_scale * time_gate * torch.sigmoid(
-            base["raw"][:, 1:2] + corr[:, 1:2]
+        C_C_int = gamma * (
+            1.0 - time_gate * torch.sigmoid(
+                self.c_c_depletion_prior_logit + base["raw"][:, 1:2] + corr[:, 1:2]
+            )
         )
         J_rxn = k_cat_star * C_B_int * C_C_int
         surface_slope = self.surface_slope_scale * time_gate * torch.tanh(
@@ -1521,9 +1603,19 @@ class InterfaceStateNet_v9_6_FilmTraceClean(
         return 0.0 * features[:, 0:1]
 
     def _bounded_c_d_int(self, c_d_prior, corr_raw, T_raw):
-        del corr_raw, T_raw
-        eps = 1e-6 * gamma
-        return torch.clamp(c_d_prior, eps, gamma - eps)
+        del corr_raw
+        transition_gate = 1.0 - torch.exp(
+            -torch.clamp(T_raw, min=0.0) / (0.05 * T_sim)
+        )
+        mapped = smooth_bounded_concentration(
+            c_d_prior,
+            gamma,
+            transition_fraction=0.02,
+            transition_gate=transition_gate,
+        )
+        # The transition width vanishes continuously as t -> 0; enforce the
+        # exact initial trace at the endpoint used by the IC loss/evaluator.
+        return torch.where(T_raw <= 0.0, torch.zeros_like(mapped), mapped)
 
 
 class HISInterfaceStateNet_v9_6(nn.Module):
@@ -2417,8 +2509,13 @@ class ExternalNet_v9_6_MultiscaleGreenGridDynamicStage1(ExternalNet_v9_6_Multisc
         self.dynamic_net = MultiscaleResidualHead(out_features=3, width=160, depth=3, in_features=7)
         nn.init.zeros_(self.dynamic_net.net[-1].weight)
         nn.init.zeros_(self.dynamic_net.net[-1].bias)
-        self.correction_scales = torch.tensor([8.0, 6.0, 6.0], dtype=torch.float32).reshape(1, 3)
-        self.dynamic_correction_scales = torch.tensor([3.0, 2.0, 2.0], dtype=torch.float32).reshape(1, 3)
+        concentration_factor = float(gamma_val) / REFERENCE_GAMMA
+        self.correction_scales = concentration_factor * torch.tensor(
+            [8.0, 6.0, 6.0], dtype=torch.float32
+        ).reshape(1, 3)
+        self.dynamic_correction_scales = concentration_factor * torch.tensor(
+            [3.0, 2.0, 2.0], dtype=torch.float32
+        ).reshape(1, 3)
 
     def residual_raw(self, x_net):
         return ExternalNet_v9_6_MultiscaleGreenGrid.residual_raw(self, x_net)
@@ -2920,7 +3017,8 @@ class ExternalNet_v9_6_FilmTraceGreenClean(ExternalNet_v9_6_MultiscaleGreenGridF
 
     def tracegreen_residual_correction(self, T_raw, z, x_net):
         scale = self.clean_residual_scale.to(device=T_raw.device, dtype=T_raw.dtype)
-        return scale * super().tracegreen_residual_correction(T_raw, z, x_net)
+        concentration_factor = float(self.gamma) / REFERENCE_GAMMA
+        return concentration_factor * scale * super().tracegreen_residual_correction(T_raw, z, x_net)
 
 
 class ExternalNet_v9_6_MultiscaleGreenGridMemory(ExternalNet_v9_6_MultiscaleGreenGridDynamic):
@@ -3865,9 +3963,24 @@ def load_compatible_state_dict(module, state_dict, module_name):
     return result
 
 
+def validate_checkpoint_physical_parameters(checkpoint, path):
+    parameters = checkpoint.get('parameters', {})
+    for name, active in (("gamma", gamma), ("k_cat_star", k_cat_star)):
+        stored = parameters.get(name)
+        if stored is None:
+            continue
+        if not np.isclose(float(stored), float(active), rtol=1e-7, atol=1e-10):
+            raise ValueError(
+                f"Checkpoint parameter mismatch for {name}: checkpoint={stored}, "
+                f"active={active}. Start a fresh fixed-parameter Stage 1 run or "
+                f"select a checkpoint trained with the same parameters: {path}"
+            )
+
+
 def load_model_v96(model_thin, model_ext, optimizer, scheduler, path, load_optimizer_state=True):
     if os.path.exists(path):
         checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+        validate_checkpoint_physical_parameters(checkpoint, path)
         load_compatible_state_dict(model_thin, checkpoint['model_thin_state_dict'], "Thin model")
         load_compatible_state_dict(model_ext, checkpoint['model_ext_state_dict'], "External model")
         optimizer_loaded = False
@@ -4096,11 +4209,12 @@ def concentration_bounds_loss(C_A, C_B, C_C, C_D):
         torch.mean(torch.relu(-C_B) ** 2) +
         torch.mean(torch.relu(C_B - 1.0) ** 2)
     )
+    ext_scale = external_residual_scale()
     ext_loss = (
-        torch.mean(torch.relu(-C_C) ** 2) +
-        torch.mean(torch.relu(C_C - gamma) ** 2) +
-        torch.mean(torch.relu(-C_D) ** 2) +
-        torch.mean(torch.relu(C_D - gamma) ** 2)
+        torch.mean((ext_scale * torch.relu(-C_C)) ** 2) +
+        torch.mean((ext_scale * torch.relu(C_C - gamma)) ** 2) +
+        torch.mean((ext_scale * torch.relu(-C_D)) ** 2) +
+        torch.mean((ext_scale * torch.relu(C_D - gamma)) ** 2)
     )
     return thin_loss + ext_loss
 
@@ -4154,6 +4268,8 @@ def run_fdm_posterior_compare(model_thin, model_ext, epoch, arch_name, fdm_pkl,
         sys.executable, "-u", script_path,
         "--fdm-pkl", fdm_pkl,
         "--arch", arch_name,
+        "--gamma", str(gamma),
+        "--k-cat-star", str(k_cat_star),
         "--input-mode", "normalized" if USE_NORMALIZED_COORDS else "legacy",
         "--checkpoint", eval_checkpoint,
         "--n-time", str(n_time),
@@ -4335,6 +4451,12 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     print(f"  4. Flux sign: UNCHANGED (analysis shows equivalent to FDM)")
     print(f"  5. Thin/external interface weights: {thin_interface_weight:.1f}/{ext_interface_weight:.1f}")
     print(f"  6. PDE weights thin/ext: {pde_thin_weight:.1f}/{pde_ext_weight:.1f}; bounds weight: {bounds_weight:.1f}")
+    print(
+        "  6b. Parameter-consistent residual scales: "
+        f"external={external_residual_scale():.6g}, "
+        f"flux={flux_residual_scale():.6g}, "
+        f"J_ref={characteristic_reaction_flux():.6g}"
+    )
     if fdm_compare_pkl and fdm_compare_every > 0:
         print(f"  7. FDM posterior compare every {fdm_compare_every} epochs: {fdm_compare_pkl}")
     if isinstance(model_ext, ExternalNet_v9_6_MultiscaleGreenGrid):
@@ -4427,10 +4549,15 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         if getattr(interface_state, "interface_memory_v2", False):
             finite_gain = interface_state._intmemory_finite_gain().detach().cpu().numpy().reshape(-1).tolist()
             corr_amp = float(interface_state._intmemory_corr_amplitude().detach().cpu())
+            bounded_map = (
+                "smooth_softplus_ratio(C_D_prior)"
+                if getattr(interface_state, "film_trace_clean_interface", False)
+                else "clamp(C_D_prior+DeltaC_D)"
+            )
             print(
                 " 14. Interface-memory v2: "
                 "C_D_prior += positive finite-memory boost; "
-                "C_D_int=clamp(C_D_prior+DeltaC_D) instead of logit-sigmoid residual; "
+                f"C_D_int={bounded_map}; "
                 f"finite_gain={finite_gain}, corr_amp={corr_amp:.4f}, "
                 f"cint_jump_w={float(interface_state.cint_reversal_jump_weight):.1f}, "
                 f"cint_smooth_w={float(interface_state.cint_temporal_smooth_weight):.1f}"
@@ -4541,20 +4668,22 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         else:
             C_C_pde, C_D_pde = C_C, C_D
 
+        ext_scale = external_residual_scale()
+
         if is_flux_state:
             C_D_T = torch.autograd.grad(C_D_pde.sum(), T_ext, create_graph=True)[0]
             C_D_X = torch.autograd.grad(C_D_pde.sum(), X_ext, create_graph=True)[0]
             J_D_ext = model_ext.flux_d(inputs_ext)
             J_D_X = torch.autograd.grad(J_D_ext.sum(), X_ext, create_graph=True)[0]
-            loss_ext_conservation = torch.mean((C_D_T + J_D_X)**2)
-            loss_ext_constitutive = torch.mean((J_D_ext + D_rel_D * C_D_X)**2)
+            loss_ext_conservation = torch.mean((ext_scale * (C_D_T + J_D_X))**2)
+            loss_ext_constitutive = torch.mean((ext_scale * (J_D_ext + D_rel_D * C_D_X))**2)
             loss_pde_ext = loss_ext_conservation + 2.0 * loss_ext_constitutive
         else:
             C_C_T = torch.autograd.grad(C_C_pde.sum(), T_ext, create_graph=True)[0]
             C_C_X = torch.autograd.grad(C_C_pde.sum(), X_ext, create_graph=True)[0]
             C_C_XX = torch.autograd.grad(C_C_X.sum(), X_ext, create_graph=True)[0]
 
-            loss_pde_ext = torch.mean((C_C_T - D_rel_C * C_C_XX)**2)
+            loss_pde_ext = torch.mean((ext_scale * (C_C_T - D_rel_C * C_C_XX))**2)
 
         # 3.3 Surface boundary (Nernst) - 与 v9.5 相同
         T_surf = torch.rand(n_surface, 1, device=device) * T_sim
@@ -4611,7 +4740,10 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         inputs_far = torch.cat([T_far, X_far], dim=1)
         C_C_far, C_D_far = model_ext(inputs_far)
 
-        loss_farfield = torch.mean((C_C_far - gamma)**2) + torch.mean(C_D_far**2)
+        loss_farfield = (
+            torch.mean((ext_scale * (C_C_far - gamma))**2) +
+            torch.mean((ext_scale * C_D_far)**2)
+        )
 
         # 3.5 Initial condition
         T_ini = torch.zeros(n_points // 5, 1, device=device)
@@ -4625,12 +4757,14 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         X_ini_int = torch.ones_like(T_ini_int) * delta
         C_C_ini_int, C_D_ini_int = model_ext(torch.cat([T_ini_int, X_ini_int], dim=1))
 
-        loss_initial = (torch.mean((C_A_ini - 1.0)**2) + 
-                       torch.mean(C_B_ini**2) + 
-                       torch.mean((C_C_ini - gamma)**2) + 
-                       torch.mean(C_D_ini**2) +
-                       2.0 * torch.mean((C_C_ini_int - gamma)**2) +
-                       2.0 * torch.mean(C_D_ini_int**2))
+        loss_initial = (
+            torch.mean((C_A_ini - 1.0)**2) +
+            torch.mean(C_B_ini**2) +
+            torch.mean((ext_scale * (C_C_ini - gamma))**2) +
+            torch.mean((ext_scale * C_D_ini)**2) +
+            2.0 * torch.mean((ext_scale * (C_C_ini_int - gamma))**2) +
+            2.0 * torch.mean((ext_scale * C_D_ini_int)**2)
+        )
 
         loss_bounds = concentration_bounds_loss(C_A, C_B, C_C, C_D)
 
@@ -4653,16 +4787,19 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         C_D_X_int = torch.autograd.grad(C_D_int.sum(), X_int_ext, create_graph=True, retain_graph=True)[0]
 
         J_rxn = k_cat_star * C_B_int * C_C_int
+        flux_scale = flux_residual_scale()
 
         # 保持 v9.5 的通量符号（经分析正确）
-        flux_A_res = -D_rel_A * C_A_X_int + J_rxn
-        flux_B_res = -D_rel_B * C_B_X_int - J_rxn
-        flux_C_res = -D_rel_C * C_C_X_int + J_rxn
-        flux_D_res = -D_rel_D * C_D_X_int - J_rxn
+        flux_A_res = flux_scale * (-D_rel_A * C_A_X_int + J_rxn)
+        flux_B_res = flux_scale * (-D_rel_B * C_B_X_int - J_rxn)
+        flux_C_res = flux_scale * (-D_rel_C * C_C_X_int + J_rxn)
+        flux_D_res = flux_scale * (-D_rel_D * C_D_X_int - J_rxn)
 
         loss_interface_thin = torch.mean(flux_A_res**2) + torch.mean(flux_B_res**2)
         if getattr(model_ext, "tracegreen_external", False):
-            loss_interface_ext = torch.mean((C_C_int + C_D_int - gamma) ** 2)
+            loss_interface_ext = torch.mean(
+                (ext_scale * (C_C_int + C_D_int - gamma)) ** 2
+            )
         elif getattr(model_ext, "fluxtrace_analytic_boundary_flux", False):
             # The flux Green term satisfies the boundary flux in analytic trace
             # sense.  Autograd at y=0 evaluates the regular part of the kernel
@@ -4670,7 +4807,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             # would incorrectly force a Hermite slope correction back in.
             trace_loss = model_ext.fluxtrace_trace_consistency_loss(T_int)
             loss_interface_ext = (
-                torch.mean((C_C_int + C_D_int - gamma) ** 2) +
+                torch.mean((ext_scale * (C_C_int + C_D_int - gamma)) ** 2) +
                 float(getattr(model_ext, "fluxtrace_trace_weight", 1.0)) * trace_loss
             )
         else:
@@ -5535,7 +5672,12 @@ if __name__ == "__main__":
     parser.add_argument("--legacy-inputs", action="store_true",
                         help="Use raw coordinates for old v9.6 checkpoints.")
     parser.add_argument("--cv-points", type=int, default=8000)
-    parser.add_argument("--fdm-csv", default="../FDM/kcat1_v42_cv_data_v42.csv")
+    parser.add_argument("--fdm-csv", default="",
+                        help="Optional matching fixed-parameter FDM CV CSV.")
+    parser.add_argument("--gamma", type=float, default=REFERENCE_GAMMA,
+                        help="Fixed bulk C concentration ratio for this run.")
+    parser.add_argument("--k-cat-star", type=float, default=REFERENCE_K_CAT_STAR,
+                        help="Fixed catalytic reaction constant for this run.")
     parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256,
                         help="Global history time-grid size for multiscale_green_grid.")
@@ -5600,6 +5742,9 @@ if __name__ == "__main__":
     parser.add_argument("--smoke-test", action="store_true",
                         help="Run a tiny forward/gradient/backward sanity check and exit.")
     args = parser.parse_args()
+
+    configure_physical_parameters(args.gamma, args.k_cat_star)
+    print_physical_configuration()
 
     checkpoint_was_default = args.checkpoint == parser.get_default("checkpoint")
     MODEL_V96_PATH, MODEL_V96_BEST_PATH = resolve_checkpoint_paths(

@@ -34,6 +34,8 @@ PROGRESS_EVERY="${PROGRESS_EVERY:-25}"
 EMPTY_CACHE_EVERY="${EMPTY_CACHE_EVERY:-100}"
 CLEAN_RESIDUAL_INITIAL_SCALE="${CLEAN_RESIDUAL_INITIAL_SCALE:-0.0}"
 CLEAN_RESIDUAL_DECAY_EPOCHS="${CLEAN_RESIDUAL_DECAY_EPOCHS:-0}"
+GAMMA="${GAMMA:-10.0}"
+K_CAT_STAR="${K_CAT_STAR:-1.0}"
 
 FDM_PKL="${FDM_PKL:-/content/gdrive/MyDrive/FDM/kcat1_v42_thin_layer_catalytic_v42.pkl}"
 FDM_COMPARE_EVERY="${FDM_COMPARE_EVERY:-250}"
@@ -108,6 +110,8 @@ compare_one() {
     log "Running final posterior concentration compare for ${label}: ${ckpt}"
     "$PYTHON" -u compare_concentration_fields.py \
         --arch "$ARCH" \
+        --gamma "$GAMMA" \
+        --k-cat-star "$K_CAT_STAR" \
         --input-mode normalized \
         --checkpoint "$ckpt" \
         --fdm-pkl "$FDM_PKL" \
@@ -128,6 +132,7 @@ log "PINN v9.6 Film-TraceGreen clean run"
 log "work_dir=${WORK_DIR}"
 log "run_root=${RUN_ROOT}"
 log "arch=${ARCH}"
+log "physical parameters: gamma=${GAMMA}, k_cat_star=${K_CAT_STAR}"
 log "python=$($PYTHON --version 2>&1)"
 log "=================================================="
 
@@ -146,6 +151,8 @@ log "Resume checkpoint: ${RESUME_PATH}"
 train_cmd=(
     "$PYTHON" -u pinn_thin_layer_v9_6.py
     --arch "$ARCH"
+    --gamma "$GAMMA"
+    --k-cat-star "$K_CAT_STAR"
     --epochs "$EPOCHS"
     --resume-checkpoint "$RESUME_PATH"
     --reset-optimizer-state
