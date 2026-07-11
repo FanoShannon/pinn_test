@@ -34,6 +34,13 @@ PROGRESS_EVERY="${PROGRESS_EVERY:-25}"
 EMPTY_CACHE_EVERY="${EMPTY_CACHE_EVERY:-100}"
 CLEAN_RESIDUAL_INITIAL_SCALE="${CLEAN_RESIDUAL_INITIAL_SCALE:-0.0}"
 CLEAN_RESIDUAL_DECAY_EPOCHS="${CLEAN_RESIDUAL_DECAY_EPOCHS:-0}"
+EARLY_STOP_CHECK_EVERY="${EARLY_STOP_CHECK_EVERY:-100}"
+EARLY_STOP_PATIENCE_CHECKS="${EARLY_STOP_PATIENCE_CHECKS:-4}"
+EARLY_STOP_MIN_RELATIVE_IMPROVEMENT="${EARLY_STOP_MIN_RELATIVE_IMPROVEMENT:-0.005}"
+EARLY_STOP_EMA_ALPHA="${EARLY_STOP_EMA_ALPHA:-0.5}"
+EARLY_STOP_VALIDATION_POINTS="${EARLY_STOP_VALIDATION_POINTS:-96}"
+EARLY_STOP_MIN_EPOCHS="${EARLY_STOP_MIN_EPOCHS:-$((CLEAN_RESIDUAL_DECAY_EPOCHS + EARLY_STOP_CHECK_EVERY))}"
+DISABLE_EARLY_STOP="${DISABLE_EARLY_STOP:-0}"
 GAMMA="${GAMMA:-10.0}"
 K_CAT_STAR="${K_CAT_STAR:-1.0}"
 
@@ -133,6 +140,7 @@ log "work_dir=${WORK_DIR}"
 log "run_root=${RUN_ROOT}"
 log "arch=${ARCH}"
 log "physical parameters: gamma=${GAMMA}, k_cat_star=${K_CAT_STAR}"
+log "physics early stop: every=${EARLY_STOP_CHECK_EVERY}, patience=${EARLY_STOP_PATIENCE_CHECKS}, min_epochs=${EARLY_STOP_MIN_EPOCHS}"
 log "python=$($PYTHON --version 2>&1)"
 log "=================================================="
 
@@ -161,8 +169,13 @@ train_cmd=(
     --save-every "$SAVE_EVERY"
     --progress-every "$PROGRESS_EVERY"
     --empty-cache-every "$EMPTY_CACHE_EVERY"
-    --no-early-stop
     --abort-on-nan
+    --early-stop-check-every "$EARLY_STOP_CHECK_EVERY"
+    --early-stop-patience-checks "$EARLY_STOP_PATIENCE_CHECKS"
+    --early-stop-min-epochs "$EARLY_STOP_MIN_EPOCHS"
+    --early-stop-min-relative-improvement "$EARLY_STOP_MIN_RELATIVE_IMPROVEMENT"
+    --early-stop-ema-alpha "$EARLY_STOP_EMA_ALPHA"
+    --early-stop-validation-points "$EARLY_STOP_VALIDATION_POINTS"
     --learning-rate "$LR"
     --green-time-grid "$GREEN_TIME_GRID"
     --green-kernel-points "$GREEN_KERNEL_POINTS"
@@ -188,6 +201,10 @@ if [[ "$FDM_COMPARE_EVERY" != "0" && -f "$FDM_PKL" ]]; then
     )
 else
     log "In-training FDM compare disabled or FDM missing: ${FDM_PKL}"
+fi
+
+if [[ "$DISABLE_EARLY_STOP" == "1" ]]; then
+    train_cmd+=(--no-early-stop)
 fi
 
 log "Training command: ${train_cmd[*]}"

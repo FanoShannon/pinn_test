@@ -4219,6 +4219,185 @@ def concentration_bounds_loss(C_A, C_B, C_C, C_D):
     return thin_loss + ext_loss
 
 
+def fixed_physics_validation_score(
+    model_thin,
+    model_ext,
+    device,
+    pde_thin_weight,
+    pde_ext_weight,
+    farfield_weight,
+    initial_weight,
+    bounds_weight,
+    thin_interface_weight,
+    ext_interface_weight,
+    n_points=96,
+):
+    """Deterministic, FDM-free physics score for checkpointing and early stop."""
+    n_points = max(32, int(n_points))
+    thin_was_training = model_thin.training
+    ext_was_training = model_ext.training
+    model_thin.eval()
+    model_ext.eval()
+    if hasattr(model_ext, "clear_step_cache"):
+        model_ext.clear_step_cache()
+
+    ext_scale = external_residual_scale()
+    flux_scale = flux_residual_scale()
+    is_flux_state = hasattr(model_ext, "flux_d")
+
+    def fixed_pair(x_min, x_max, multiplier):
+        index = torch.arange(n_points, device=device, dtype=torch.float32)
+        time_fraction = (index + 0.5) / n_points
+        space_fraction = ((index * multiplier) % n_points + 0.5) / n_points
+        T_eval = (time_fraction * T_sim).reshape(-1, 1).requires_grad_(True)
+        X_eval = (x_min + space_fraction * (x_max - x_min)).reshape(-1, 1)
+        X_eval.requires_grad_(True)
+        return T_eval, X_eval
+
+    try:
+        with torch.enable_grad():
+            T_thin, X_thin = fixed_pair(0.0, delta, 37)
+            C_A, C_B = model_thin(torch.cat([T_thin, X_thin], dim=1))
+            C_A_T = torch.autograd.grad(C_A.sum(), T_thin, create_graph=True, retain_graph=True)[0]
+            C_A_X = torch.autograd.grad(C_A.sum(), X_thin, create_graph=True, retain_graph=True)[0]
+            C_A_XX = torch.autograd.grad(C_A_X.sum(), X_thin, create_graph=True, retain_graph=True)[0]
+            C_B_T = torch.autograd.grad(C_B.sum(), T_thin, create_graph=True, retain_graph=True)[0]
+            C_B_X = torch.autograd.grad(C_B.sum(), X_thin, create_graph=True, retain_graph=True)[0]
+            C_B_XX = torch.autograd.grad(C_B_X.sum(), X_thin, create_graph=True)[0]
+            loss_pde_thin = (
+                torch.mean((C_A_T - D_rel_A * C_A_XX) ** 2) +
+                torch.mean((C_B_T - D_rel_B * C_B_XX) ** 2)
+            )
+
+            T_ext, X_ext = fixed_pair(delta, X_ext_max, 53)
+            ext_inputs = torch.cat([T_ext, X_ext], dim=1)
+            C_C, C_D = model_ext(ext_inputs)
+            if hasattr(model_ext, "pde_fields"):
+                C_C_pde, C_D_pde = model_ext.pde_fields(ext_inputs)
+            else:
+                C_C_pde, C_D_pde = C_C, C_D
+
+            if is_flux_state:
+                C_D_T = torch.autograd.grad(C_D_pde.sum(), T_ext, create_graph=True, retain_graph=True)[0]
+                C_D_X = torch.autograd.grad(C_D_pde.sum(), X_ext, create_graph=True, retain_graph=True)[0]
+                J_D_ext = model_ext.flux_d(ext_inputs)
+                J_D_X = torch.autograd.grad(J_D_ext.sum(), X_ext, create_graph=True)[0]
+                loss_ext_conservation = torch.mean((ext_scale * (C_D_T + J_D_X)) ** 2)
+                loss_ext_constitutive = torch.mean((ext_scale * (J_D_ext + D_rel_D * C_D_X)) ** 2)
+                loss_pde_ext = loss_ext_conservation + 2.0 * loss_ext_constitutive
+            else:
+                C_C_T = torch.autograd.grad(C_C_pde.sum(), T_ext, create_graph=True, retain_graph=True)[0]
+                C_C_X = torch.autograd.grad(C_C_pde.sum(), X_ext, create_graph=True, retain_graph=True)[0]
+                C_C_XX = torch.autograd.grad(C_C_X.sum(), X_ext, create_graph=True)[0]
+                loss_pde_ext = torch.mean((ext_scale * (C_C_T - D_rel_C * C_C_XX)) ** 2)
+
+            T_state = torch.linspace(0.0, float(T_sim), n_points, device=device).reshape(-1, 1)
+            X_surface = torch.zeros_like(T_state)
+            C_A_surface, C_B_surface = model_thin(torch.cat([T_state, X_surface], dim=1))
+            theta_state = potential_theta(T_state)
+            C_A_eq = torch.sigmoid(theta_state)
+            C_B_eq = torch.sigmoid(-theta_state)
+            loss_surface = torch.mean(
+                (C_A_surface - C_A_eq) ** 2 + (C_B_surface - C_B_eq) ** 2
+            )
+
+            X_far = torch.ones_like(T_state) * X_ext_max
+            C_C_far, C_D_far = model_ext(torch.cat([T_state, X_far], dim=1))
+            loss_farfield = (
+                torch.mean((ext_scale * (C_C_far - gamma)) ** 2) +
+                torch.mean((ext_scale * C_D_far) ** 2)
+            )
+
+            X_ini_thin = torch.linspace(0.0, float(delta), n_points, device=device).reshape(-1, 1)
+            X_ini_ext = torch.linspace(float(delta), float(X_ext_max), n_points, device=device).reshape(-1, 1)
+            T_ini = torch.zeros_like(X_ini_thin)
+            C_A_ini, C_B_ini = model_thin(torch.cat([T_ini, X_ini_thin], dim=1))
+            C_C_ini, C_D_ini = model_ext(torch.cat([T_ini, X_ini_ext], dim=1))
+            loss_initial = (
+                torch.mean((C_A_ini - 1.0) ** 2) + torch.mean(C_B_ini ** 2) +
+                torch.mean((ext_scale * (C_C_ini - gamma)) ** 2) +
+                torch.mean((ext_scale * C_D_ini) ** 2)
+            )
+            loss_bounds = concentration_bounds_loss(C_A, C_B, C_C, C_D)
+
+            index = torch.arange(n_points, device=device, dtype=torch.float32)
+            T_int = (((index + 0.5) / n_points) * T_sim).reshape(-1, 1)
+            X_int_thin = torch.ones_like(T_int, requires_grad=True) * delta
+            C_A_int, C_B_int = model_thin(torch.cat([T_int, X_int_thin], dim=1))
+            C_A_X_int = torch.autograd.grad(C_A_int.sum(), X_int_thin, create_graph=True, retain_graph=True)[0]
+            C_B_X_int = torch.autograd.grad(C_B_int.sum(), X_int_thin, create_graph=True)[0]
+
+            X_int_ext = torch.ones_like(T_int, requires_grad=True) * delta
+            C_C_int, C_D_int = model_ext(torch.cat([T_int, X_int_ext], dim=1))
+            J_rxn = k_cat_star * C_B_int * C_C_int
+            loss_interface_thin = (
+                torch.mean((flux_scale * (-D_rel_A * C_A_X_int + J_rxn)) ** 2) +
+                torch.mean((flux_scale * (-D_rel_B * C_B_X_int - J_rxn)) ** 2)
+            )
+
+            if getattr(model_ext, "tracegreen_external", False):
+                loss_interface_ext = torch.mean(
+                    (ext_scale * (C_C_int + C_D_int - gamma)) ** 2
+                )
+            elif getattr(model_ext, "fluxtrace_analytic_boundary_flux", False):
+                trace_loss = model_ext.fluxtrace_trace_consistency_loss(T_int)
+                loss_interface_ext = (
+                    torch.mean((ext_scale * (C_C_int + C_D_int - gamma)) ** 2) +
+                    float(getattr(model_ext, "fluxtrace_trace_weight", 1.0)) * trace_loss
+                )
+            else:
+                C_C_X_int = torch.autograd.grad(C_C_int.sum(), X_int_ext, create_graph=True, retain_graph=True)[0]
+                C_D_X_int = torch.autograd.grad(C_D_int.sum(), X_int_ext, create_graph=True)[0]
+                loss_interface_ext = (
+                    torch.mean((flux_scale * (-D_rel_C * C_C_X_int + J_rxn)) ** 2) +
+                    torch.mean((flux_scale * (-D_rel_D * C_D_X_int - J_rxn)) ** 2)
+                )
+
+            interface_state = getattr(model_ext, "interface_state", None)
+            loss_reversal = torch.zeros((), device=device)
+            if getattr(interface_state, "continuous_time_features", False):
+                eps_t = 0.0025 * T_sim
+                X_rev = torch.linspace(float(delta), float(X_ext_max), 64, device=device).reshape(-1, 1)
+                T_minus = torch.ones_like(X_rev) * (T_switch * T_sim - eps_t)
+                T_plus = torch.ones_like(X_rev) * (T_switch * T_sim + eps_t)
+                C_C_minus, C_D_minus = model_ext(torch.cat([T_minus, X_rev], dim=1))
+                C_C_plus, C_D_plus = model_ext(torch.cat([T_plus, X_rev], dim=1))
+                loss_reversal = torch.mean(
+                    (C_C_plus - C_C_minus) ** 2 + (C_D_plus - C_D_minus) ** 2
+                )
+
+            score = (
+                pde_thin_weight * loss_pde_thin +
+                pde_ext_weight * loss_pde_ext +
+                100.0 * loss_surface +
+                farfield_weight * loss_farfield +
+                initial_weight * loss_initial +
+                bounds_weight * loss_bounds +
+                thin_interface_weight * loss_interface_thin +
+                ext_interface_weight * loss_interface_ext +
+                100.0 * loss_reversal
+            )
+            components = {
+                "score": float(score.detach().cpu()),
+                "pde_thin": float(loss_pde_thin.detach().cpu()),
+                "pde_ext": float(loss_pde_ext.detach().cpu()),
+                "surface": float(loss_surface.detach().cpu()),
+                "farfield": float(loss_farfield.detach().cpu()),
+                "initial": float(loss_initial.detach().cpu()),
+                "bounds": float(loss_bounds.detach().cpu()),
+                "interface_thin": float(loss_interface_thin.detach().cpu()),
+                "interface_ext": float(loss_interface_ext.detach().cpu()),
+                "reversal": float(loss_reversal.detach().cpu()),
+            }
+    finally:
+        if hasattr(model_ext, "clear_step_cache"):
+            model_ext.clear_step_cache()
+        model_thin.train(thin_was_training)
+        model_ext.train(ext_was_training)
+
+    return components
+
+
 def run_fdm_posterior_compare(model_thin, model_ext, epoch, arch_name, fdm_pkl,
                               output_dir=None, n_time=160, n_x_in=120, n_x_out=160,
                               batch_size=65536, save_figure=False, save_fields=False):
@@ -4345,7 +4524,13 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                      empty_cache_every=0, learning_rate=5e-5,
                      abort_on_nan=False,
                      clean_residual_initial_scale=0.0,
-                     clean_residual_decay_epochs=0):
+                     clean_residual_decay_epochs=0,
+                     early_stop_check_every=100,
+                     early_stop_patience_checks=4,
+                     early_stop_min_epochs=-1,
+                     early_stop_min_relative_improvement=0.005,
+                     early_stop_ema_alpha=0.5,
+                     early_stop_validation_points=96):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     model_thin.to(device)
@@ -4369,6 +4554,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     is_green = isinstance(model_ext, (ExternalNet_v9_6_MultiscaleGreenKernel, ExternalNet_v9_6_MultiscaleGreenGrid))
     is_buffer = isinstance(model_ext, ExternalNet_v9_6_MultiscaleBuffer)
     is_flux_state = hasattr(model_ext, "flux_d")
+    interface_state = getattr(model_ext, "interface_state", None)
     is_extbasis = isinstance(model_ext, (
         ExternalNet_v9_6_MultiscaleHermiteExtBasis,
         ExternalNet_v9_6_MultiscaleGreenKernel,
@@ -4395,14 +4581,37 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         'direct_temporal_smooth': [], 'static_temporal_smooth': [],
         'phase_temporal_smooth': [], 'cint_reversal_jump': [],
         'cint_temporal_smooth': [], 'lr': [], 'nernst_err': [],
-        'surface_state': [], 'physics_score': []
+        'surface_state': [], 'physics_score': [],
+        'physics_validation_score': [], 'physics_validation_ema': [],
+        'physics_validation_epoch': []
     }
 
     best_score = float('inf')
     best_epoch = 0
-    patience = 5000
-    no_improve = 0
+    no_improve_checks = 0
+    validation_ema = None
     best_val_results = None
+
+    early_stop_check_every = max(1, int(early_stop_check_every))
+    early_stop_patience_checks = max(1, int(early_stop_patience_checks))
+    early_stop_ema_alpha = float(early_stop_ema_alpha)
+    if not 0.0 < early_stop_ema_alpha <= 1.0:
+        raise ValueError("early_stop_ema_alpha must be in (0, 1]")
+    early_stop_min_relative_improvement = max(
+        0.0, float(early_stop_min_relative_improvement)
+    )
+    early_stop_validation_points = max(32, int(early_stop_validation_points))
+    if int(early_stop_min_epochs) < 0:
+        if getattr(model_ext, "film_trace_clean_external", False):
+            early_stop_min_epochs = max(
+                500,
+                int(clean_residual_decay_epochs) + early_stop_check_every,
+            )
+        elif getattr(model_ext, "stage1_clean_warmstart", False):
+            early_stop_min_epochs = 1500
+        else:
+            early_stop_min_epochs = 1000
+    early_stop_min_epochs = max(0, int(early_stop_min_epochs))
 
     resume_paths = []
     if resume_checkpoint:
@@ -4429,13 +4638,20 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         )
         if loaded_history:
             loss_history.update(normalize_loss_history(loaded_history))
+            validation_history = loss_history.get('physics_validation_ema', [])
+            if validation_history:
+                validation_ema = float(validation_history[-1])
         if reset_best_score:
             best_score = float('inf')
             best_epoch = start_epoch
+            validation_ema = None
             print("Best score reset because the active loss weights may differ from the checkpoint.")
-        elif loaded_best is not None:
+        elif validation_ema is not None and loaded_best is not None:
             best_score = loaded_best
             best_epoch = start_epoch
+        else:
+            best_score = float('inf')
+            print("Best score reset because the checkpoint predates fixed physics validation.")
         print(f"Resumed from {loaded_path} at epoch {start_epoch}")
 
     print(f"\n{'='*80}")
@@ -4444,6 +4660,15 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     print(f"Current checkpoint: {MODEL_V96_PATH}")
     print(f"Best checkpoint:    {MODEL_V96_BEST_PATH}")
     print(f"Save every:         {save_every} epochs")
+    print(
+        "Physics early stop: "
+        f"enabled={early_stop}, check_every={early_stop_check_every}, "
+        f"min_epochs={early_stop_min_epochs}, "
+        f"patience_checks={early_stop_patience_checks}, "
+        f"min_relative_improvement={early_stop_min_relative_improvement:.4g}, "
+        f"ema_alpha={early_stop_ema_alpha:.3f}, "
+        f"validation_points={early_stop_validation_points}"
+    )
     print(f"Key changes:")
     print(f"  1. Interface weight: 50 → 200 (4x increase)")
     print(f"  2. Interface sampling: focused T windows plus higher hardbc point count")
@@ -5065,6 +5290,82 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 float(interface_state_for_history._abel_mix_lambda().detach().cpu())
             )
 
+        # Deterministic physics-only validation.  FDM is deliberately excluded
+        # from checkpoint selection and stopping to avoid posterior data leakage.
+        if completed_step % early_stop_check_every == 0:
+            validation = fixed_physics_validation_score(
+                model_thin,
+                model_ext,
+                device,
+                pde_thin_weight=pde_thin_weight,
+                pde_ext_weight=pde_ext_weight,
+                farfield_weight=farfield_weight,
+                initial_weight=initial_weight,
+                bounds_weight=bounds_weight,
+                thin_interface_weight=thin_interface_weight,
+                ext_interface_weight=ext_interface_weight,
+                n_points=early_stop_validation_points,
+            )
+            raw_validation_score = validation["score"]
+            if validation_ema is None:
+                validation_ema = raw_validation_score
+            else:
+                validation_ema = (
+                    early_stop_ema_alpha * raw_validation_score +
+                    (1.0 - early_stop_ema_alpha) * validation_ema
+                )
+
+            loss_history.setdefault('physics_validation_score', []).append(raw_validation_score)
+            loss_history.setdefault('physics_validation_ema', []).append(validation_ema)
+            loss_history.setdefault('physics_validation_epoch', []).append(epoch + 1)
+
+            required_score = best_score * (1.0 - early_stop_min_relative_improvement)
+            improved = not np.isfinite(best_score) or validation_ema < required_score
+            if improved:
+                best_score = validation_ema
+                best_epoch = epoch + 1
+                no_improve_checks = 0
+                best_val_results = validation
+                save_model_v96(
+                    model_thin,
+                    model_ext,
+                    optimizer,
+                    scheduler,
+                    epoch + 1,
+                    MODEL_V96_BEST_PATH,
+                    loss_history=loss_history,
+                    best_val_loss=best_score,
+                )
+                status = "new best"
+            elif completed_step >= early_stop_min_epochs:
+                no_improve_checks += 1
+                status = f"plateau {no_improve_checks}/{early_stop_patience_checks}"
+            else:
+                no_improve_checks = 0
+                status = "warmup"
+
+            print(
+                "[physics-val] "
+                f"epoch={epoch + 1} raw={raw_validation_score:.4e} "
+                f"ema={validation_ema:.4e} best={best_score:.4e} "
+                f"status={status} | "
+                f"pde=({validation['pde_thin']:.2e},{validation['pde_ext']:.2e}) "
+                f"iface=({validation['interface_thin']:.2e},{validation['interface_ext']:.2e})",
+                flush=True,
+            )
+
+            if (
+                early_stop and
+                completed_step >= early_stop_min_epochs and
+                no_improve_checks >= early_stop_patience_checks
+            ):
+                print(f"\n{'='*60}")
+                print(f"Physics early stopping at epoch {epoch + 1}")
+                print(f"Best validation EMA: {best_score:.4e} at epoch {best_epoch}")
+                print("FDM was not used for checkpoint selection or stopping.")
+                print(f"{'='*60}")
+                break
+
         step_count = epoch - start_epoch + 1
         if progress_every > 0 and step_count % progress_every == 0:
             now = time.time()
@@ -5108,34 +5409,14 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             if torch.cuda.is_available():
                 torch.cuda.reset_peak_memory_stats(device)
 
-        # ========== 7. Validation & Early stopping ==========
-        if epoch % 500 == 0:
+        # ========== 7. Human-readable diagnostics ==========
+        if completed_step % 500 == 0:
             if hasattr(model_ext, "clear_step_cache"):
                 model_ext.clear_step_cache()
-            val_results = validate_model(model_thin, model_ext, device, epoch, verbose=True)
-            save_score = physics_score.item()
-
-            if save_score < best_score:
-                best_score = save_score
-                best_epoch = epoch
-                no_improve = 0
-                best_val_results = val_results
-                save_model_v96(model_thin, model_ext, optimizer, scheduler,
-                             epoch, MODEL_V96_BEST_PATH,
-                             loss_history=loss_history, best_val_loss=best_score)
-                print(f"  ✓ New best model saved (physics score: {best_score:.4e})")
-            else:
-                no_improve += 500
-
-            if early_stop and no_improve > patience and epoch > start_epoch + 8000:
-                print(f"\n{'='*60}")
-                print(f"Early stopping at epoch {epoch}")
-                print(f"Best physics score: {best_score:.4e} at epoch {best_epoch}")
-                print(f"{'='*60}")
-                break
+            val_results = validate_model(model_thin, model_ext, device, epoch + 1, verbose=True)
 
         # 进度输出
-        if epoch % 500 == 0:
+        if completed_step % 500 == 0:
             with torch.no_grad():
                 T_test = torch.rand(100, 1, device=device) * T_sim
                 X_test = torch.rand(100, 1, device=device) * delta
@@ -5201,7 +5482,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             print(f"  Hard: A+B={err_AB:.2e}, C+D={err_CD:.2e}")
             print(f"  Nernst={nernst_err_test:.2e} | J_rxn={J_rxn_test:.4e}")
             print(f"  C_B(δ)={C_B_int_test.mean().item():.4f}, C_C(δ)={C_C_int_test.mean().item():.4f}")
-            print(f"  Best physics score: {best_score:.2e} @ {best_epoch}")
+            print(f"  Best physics validation EMA: {best_score:.2e} @ {best_epoch}")
             print(f"  LR: {optimizer.param_groups[0]['lr']:.2e}")
             if hasattr(model_ext, "clean_residual_scale"):
                 print(f"  R_smooth scaffold scale: {float(model_ext.clean_residual_scale.detach().cpu()):.4f}")
@@ -5209,15 +5490,15 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             if getattr(interface_state, "mixed_abel_interface", False):
                 print(f"  Abel mix lambda: {float(interface_state._abel_mix_lambda().detach().cpu()):.6f}")
 
-            if epoch % 2000 == 0 and epoch > start_epoch:
+            if completed_step % 2000 == 0:
                 phys_results = verify_interface_physics(model_thin, model_ext, device)
                 print_physics_verification(phys_results)
 
-            if fdm_compare_pkl and fdm_compare_every > 0 and epoch % fdm_compare_every == 0:
+            if fdm_compare_pkl and fdm_compare_every > 0 and completed_step % fdm_compare_every == 0:
                 if hasattr(model_ext, "clear_step_cache"):
                     model_ext.clear_step_cache()
                 run_fdm_posterior_compare(
-                    model_thin, model_ext, epoch, arch_name, fdm_compare_pkl,
+                    model_thin, model_ext, epoch + 1, arch_name, fdm_compare_pkl,
                     output_dir=fdm_compare_dir,
                     n_time=fdm_compare_n_time,
                     n_x_in=fdm_compare_n_x_in,
@@ -5235,6 +5516,39 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             save_model_v96(model_thin, model_ext, optimizer, scheduler,
                          epoch + 1, MODEL_V96_PATH,
                          loss_history=loss_history, best_val_loss=best_score)
+
+    # Very short runs may finish before the first scheduled validation check.
+    # Still create a physically selected best checkpoint for downstream stages.
+    if not np.isfinite(best_score):
+        validation = fixed_physics_validation_score(
+            model_thin,
+            model_ext,
+            device,
+            pde_thin_weight=pde_thin_weight,
+            pde_ext_weight=pde_ext_weight,
+            farfield_weight=farfield_weight,
+            initial_weight=initial_weight,
+            bounds_weight=bounds_weight,
+            thin_interface_weight=thin_interface_weight,
+            ext_interface_weight=ext_interface_weight,
+            n_points=early_stop_validation_points,
+        )
+        best_score = validation["score"]
+        best_epoch = epoch + 1
+        best_val_results = validation
+        loss_history.setdefault('physics_validation_score', []).append(best_score)
+        loss_history.setdefault('physics_validation_ema', []).append(best_score)
+        loss_history.setdefault('physics_validation_epoch', []).append(best_epoch)
+        save_model_v96(
+            model_thin,
+            model_ext,
+            optimizer,
+            scheduler,
+            epoch + 1,
+            MODEL_V96_BEST_PATH,
+            loss_history=loss_history,
+            best_val_loss=best_score,
+        )
 
     # Final save
     save_model_v96(model_thin, model_ext, optimizer, scheduler,
@@ -5739,6 +6053,18 @@ if __name__ == "__main__":
                         help="Load model weights from the resume checkpoint but restart optimizer/scheduler state.")
     parser.add_argument("--no-early-stop", action="store_true",
                         help="Disable early stopping and run exactly --epochs epochs.")
+    parser.add_argument("--early-stop-check-every", type=int, default=100,
+                        help="Evaluate the fixed FDM-free physics validation set every N epochs.")
+    parser.add_argument("--early-stop-patience-checks", type=int, default=4,
+                        help="Stop after this many validation checks without sufficient improvement.")
+    parser.add_argument("--early-stop-min-epochs", type=int, default=-1,
+                        help="Minimum added epochs before stopping; -1 selects an architecture-aware default.")
+    parser.add_argument("--early-stop-min-relative-improvement", type=float, default=0.005,
+                        help="Relative EMA improvement required to reset early-stop patience.")
+    parser.add_argument("--early-stop-ema-alpha", type=float, default=0.5,
+                        help="EMA alpha for deterministic physics validation scores.")
+    parser.add_argument("--early-stop-validation-points", type=int, default=96,
+                        help="Deterministic validation points per physics component.")
     parser.add_argument("--smoke-test", action="store_true",
                         help="Run a tiny forward/gradient/backward sanity check and exit.")
     args = parser.parse_args()
@@ -5879,6 +6205,12 @@ if __name__ == "__main__":
         abort_on_nan=args.abort_on_nan,
         clean_residual_initial_scale=args.clean_residual_initial_scale,
         clean_residual_decay_epochs=args.clean_residual_decay_epochs,
+        early_stop_check_every=args.early_stop_check_every,
+        early_stop_patience_checks=args.early_stop_patience_checks,
+        early_stop_min_epochs=args.early_stop_min_epochs,
+        early_stop_min_relative_improvement=args.early_stop_min_relative_improvement,
+        early_stop_ema_alpha=args.early_stop_ema_alpha,
+        early_stop_validation_points=args.early_stop_validation_points,
     )
 
     # 可视化

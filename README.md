@@ -562,6 +562,20 @@ Parameter-scale consistency in this branch:
 - Clean Stage 2 maps the Film-Abel prior into `(0,gamma)` with a differentiable
   softplus-ratio map instead of a hard clamp.
 
+Physics-only early stopping is enabled by default.  It uses a fixed deterministic
+collocation set and never reads FDM data.  Every 100 epochs it evaluates the
+scale-consistent PDE, surface, initial, far-field, interface, bounds, and reversal
+residuals; an EMA (`alpha=0.5`) must improve by at least `0.5%` to reset four-check
+patience.  Stage 1 cannot stop before 1500 added epochs.  Stage 2 cannot stop until
+the `R_smooth` decay has completed plus one validation interval.  `STAGE1_EPOCHS`
+and `STAGE2_EPOCHS` are therefore maximum budgets rather than mandatory lengths.
+
+Useful overrides are `EARLY_STOP_CHECK_EVERY`, `EARLY_STOP_PATIENCE_CHECKS`,
+`EARLY_STOP_STAGE1_MIN_EPOCHS`, `EARLY_STOP_STAGE2_MIN_EPOCHS`, and
+`EARLY_STOP_MIN_RELATIVE_IMPROVEMENT`.  `EARLY_STOP_VALIDATION_POINTS` defaults
+to 96 and can be reduced to 64 for a cheaper diagnostic.  Set
+`DISABLE_EARLY_STOP=1` only for a deliberate fixed-length ablation.
+
 For a short check:
 
 ```bash

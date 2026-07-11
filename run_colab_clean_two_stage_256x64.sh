@@ -41,6 +41,14 @@ STAGE2_EPOCHS="${STAGE2_EPOCHS:-1500}"
 STAGE2_LR="${STAGE2_LR:-2e-6}"
 CLEAN_RESIDUAL_INITIAL_SCALE="${CLEAN_RESIDUAL_INITIAL_SCALE:-1.0}"
 CLEAN_RESIDUAL_DECAY_EPOCHS="${CLEAN_RESIDUAL_DECAY_EPOCHS:-1000}"
+EARLY_STOP_CHECK_EVERY="${EARLY_STOP_CHECK_EVERY:-100}"
+EARLY_STOP_PATIENCE_CHECKS="${EARLY_STOP_PATIENCE_CHECKS:-4}"
+EARLY_STOP_MIN_RELATIVE_IMPROVEMENT="${EARLY_STOP_MIN_RELATIVE_IMPROVEMENT:-0.005}"
+EARLY_STOP_EMA_ALPHA="${EARLY_STOP_EMA_ALPHA:-0.5}"
+EARLY_STOP_VALIDATION_POINTS="${EARLY_STOP_VALIDATION_POINTS:-96}"
+EARLY_STOP_STAGE1_MIN_EPOCHS="${EARLY_STOP_STAGE1_MIN_EPOCHS:-1500}"
+EARLY_STOP_STAGE2_MIN_EPOCHS="${EARLY_STOP_STAGE2_MIN_EPOCHS:-$((CLEAN_RESIDUAL_DECAY_EPOCHS + EARLY_STOP_CHECK_EVERY))}"
+DISABLE_EARLY_STOP="${DISABLE_EARLY_STOP:-0}"
 
 FDM_PKL="${FDM_PKL:-/content/gdrive/MyDrive/FDM/kcat1_v42_thin_layer_catalytic_v42.pkl}"
 FDM_COMPARE_EVERY="${FDM_COMPARE_EVERY:-250}"
@@ -121,6 +129,7 @@ log "stage2=${STAGE2_ARCH}, epochs=${STAGE2_EPOCHS}, lr=${STAGE2_LR}"
 log "green M=${GREEN_TIME_GRID}, K=${GREEN_KERNEL_POINTS}"
 log "physical parameters: gamma=${GAMMA}, k_cat_star=${K_CAT_STAR}"
 log "clean residual scale=${CLEAN_RESIDUAL_INITIAL_SCALE} -> 0 over ${CLEAN_RESIDUAL_DECAY_EPOCHS} epochs"
+log "physics early stop: every=${EARLY_STOP_CHECK_EVERY}, patience=${EARLY_STOP_PATIENCE_CHECKS}, stage1_min=${EARLY_STOP_STAGE1_MIN_EPOCHS}, stage2_min=${EARLY_STOP_STAGE2_MIN_EPOCHS}"
 log "python=$($PYTHON --version 2>&1)"
 log "=================================================="
 
@@ -155,8 +164,13 @@ else
         --save-every "$SAVE_EVERY"
         --progress-every "$PROGRESS_EVERY"
         --empty-cache-every "$EMPTY_CACHE_EVERY"
-        --no-early-stop
         --abort-on-nan
+        --early-stop-check-every "$EARLY_STOP_CHECK_EVERY"
+        --early-stop-patience-checks "$EARLY_STOP_PATIENCE_CHECKS"
+        --early-stop-min-epochs "$EARLY_STOP_STAGE1_MIN_EPOCHS"
+        --early-stop-min-relative-improvement "$EARLY_STOP_MIN_RELATIVE_IMPROVEMENT"
+        --early-stop-ema-alpha "$EARLY_STOP_EMA_ALPHA"
+        --early-stop-validation-points "$EARLY_STOP_VALIDATION_POINTS"
         --learning-rate "$STAGE1_LR"
         --green-time-grid "$GREEN_TIME_GRID"
         --green-kernel-points "$GREEN_KERNEL_POINTS"
@@ -170,6 +184,9 @@ else
         --bounds-weight 30.0
     )
     add_fdm_compare_args stage1_cmd "$FDM_STAGE1_DIR"
+    if [[ "$DISABLE_EARLY_STOP" == "1" ]]; then
+        stage1_cmd+=(--no-early-stop)
+    fi
 
     log "Stage1 command: ${stage1_cmd[*]}"
     "${stage1_cmd[@]}" 2>&1 | tee "$STAGE1_LOG"
@@ -195,8 +212,13 @@ stage2_cmd=(
     --save-every "$SAVE_EVERY"
     --progress-every "$PROGRESS_EVERY"
     --empty-cache-every "$EMPTY_CACHE_EVERY"
-    --no-early-stop
     --abort-on-nan
+    --early-stop-check-every "$EARLY_STOP_CHECK_EVERY"
+    --early-stop-patience-checks "$EARLY_STOP_PATIENCE_CHECKS"
+    --early-stop-min-epochs "$EARLY_STOP_STAGE2_MIN_EPOCHS"
+    --early-stop-min-relative-improvement "$EARLY_STOP_MIN_RELATIVE_IMPROVEMENT"
+    --early-stop-ema-alpha "$EARLY_STOP_EMA_ALPHA"
+    --early-stop-validation-points "$EARLY_STOP_VALIDATION_POINTS"
     --learning-rate "$STAGE2_LR"
     --green-time-grid "$GREEN_TIME_GRID"
     --green-kernel-points "$GREEN_KERNEL_POINTS"
@@ -212,6 +234,9 @@ stage2_cmd=(
     --bounds-weight 30.0
 )
 add_fdm_compare_args stage2_cmd "$FDM_STAGE2_DIR"
+if [[ "$DISABLE_EARLY_STOP" == "1" ]]; then
+    stage2_cmd+=(--no-early-stop)
+fi
 
 log "Stage2 command: ${stage2_cmd[*]}"
 "${stage2_cmd[@]}" 2>&1 | tee "$STAGE2_LOG"
