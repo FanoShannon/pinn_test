@@ -6025,7 +6025,9 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 f"ema={validation_ema:.4e} best={best_score:.4e} "
                 f"status={status} | "
                 f"pde=({validation['pde_thin']:.2e},{validation['pde_ext']:.2e}) "
-                f"iface=({validation['interface_thin']:.2e},{validation['interface_ext']:.2e})",
+                f"iface=({validation['interface_thin']:.2e},{validation['interface_ext']:.2e}) "
+                f"current={validation['current_balance']:.2e} "
+                f"mixed=({validation['thin_conservation']:.2e},{validation['thin_constitutive']:.2e})",
                 flush=True,
             )
 
