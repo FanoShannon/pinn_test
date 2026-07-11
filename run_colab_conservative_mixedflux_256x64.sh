@@ -16,6 +16,7 @@ MAX_TRAIN_POINTS="${MAX_TRAIN_POINTS:-9000}"
 CLEAN_BEST="${CLEAN_BEST:-}"
 FDM_PKL="${FDM_PKL:-/content/gdrive/MyDrive/FDM_parameter_scale_0711/gamma1_k1_v42_thin_layer_catalytic_v42.pkl}"
 SKIP_CONSERVATIVE="${SKIP_CONSERVATIVE:-0}"
+SKIP_MIXED="${SKIP_MIXED:-0}"
 CONSERVATIVE_BEST_OVERRIDE="${CONSERVATIVE_BEST_OVERRIDE:-}"
 
 CONSERVATIVE_ARCH="multiscale_film_tracegreen_clean_conservative"
@@ -75,36 +76,40 @@ if [[ ! -f "$CONSERVATIVE_BEST" ]]; then
     exit 1
 fi
 
-"$PYTHON" -u pinn_thin_layer_v9_6.py \
-    --arch "$MIXED_ARCH" \
-    --gamma "$GAMMA" \
-    --k-cat-star "$K_CAT_STAR" \
-    --epochs 1000 \
-    --resume-checkpoint "$CONSERVATIVE_BEST" \
-    --reset-optimizer-state \
-    --reset-best-score \
-    --checkpoint-dir "$MIXED_DIR" \
-    --learning-rate 1e-6 \
-    --save-every 50 \
-    --progress-every 25 \
-    --empty-cache-every 100 \
-    --abort-on-nan \
-    --green-time-grid "$GREEN_TIME_GRID" \
-    --green-kernel-points "$GREEN_KERNEL_POINTS" \
-    --base-train-points "$BASE_TRAIN_POINTS" \
-    --max-train-points "$MAX_TRAIN_POINTS" \
-    --train-point-growth 0 \
-    --current-balance-weight 0 \
-    --early-stop-check-every 50 \
-    --early-stop-min-epochs 200 \
-    --early-stop-patience-checks 3 \
-    --early-stop-min-relative-improvement 0.005 \
-    --pde-thin-weight 10 \
-    --pde-ext-weight 10 \
-    --thin-interface-weight 300 \
-    --ext-interface-weight 200 \
-    --bounds-weight 30 \
-    2>&1 | tee "$LOG_DIR/mixedflux_training.log"
+if [[ "$SKIP_MIXED" != "1" ]]; then
+    "$PYTHON" -u pinn_thin_layer_v9_6.py \
+        --arch "$MIXED_ARCH" \
+        --gamma "$GAMMA" \
+        --k-cat-star "$K_CAT_STAR" \
+        --epochs 1000 \
+        --resume-checkpoint "$CONSERVATIVE_BEST" \
+        --reset-optimizer-state \
+        --reset-best-score \
+        --checkpoint-dir "$MIXED_DIR" \
+        --learning-rate 1e-6 \
+        --save-every 50 \
+        --progress-every 25 \
+        --empty-cache-every 100 \
+        --abort-on-nan \
+        --green-time-grid "$GREEN_TIME_GRID" \
+        --green-kernel-points "$GREEN_KERNEL_POINTS" \
+        --base-train-points "$BASE_TRAIN_POINTS" \
+        --max-train-points "$MAX_TRAIN_POINTS" \
+        --train-point-growth 0 \
+        --current-balance-weight 0 \
+        --early-stop-check-every 50 \
+        --early-stop-min-epochs 200 \
+        --early-stop-patience-checks 3 \
+        --early-stop-min-relative-improvement 0.005 \
+        --pde-thin-weight 10 \
+        --pde-ext-weight 10 \
+        --thin-interface-weight 300 \
+        --ext-interface-weight 200 \
+        --bounds-weight 30 \
+        2>&1 | tee "$LOG_DIR/mixedflux_training.log"
+else
+    echo "SKIP_MIXED=1: stopping after conservative stage."
+fi
 
 compare_checkpoint() {
     local arch="$1"
@@ -136,6 +141,8 @@ compare_checkpoint() {
 
 MIXED_BEST="${MIXED_DIR}/pinn_thin_layer_catalytic_v9_6_${MIXED_ARCH}_best.pth"
 compare_checkpoint "$CONSERVATIVE_ARCH" "$CONSERVATIVE_BEST" "conservative_best"
-compare_checkpoint "$MIXED_ARCH" "$MIXED_BEST" "mixedflux_best"
+if [[ "$SKIP_MIXED" != "1" && -f "$MIXED_BEST" ]]; then
+    compare_checkpoint "$MIXED_ARCH" "$MIXED_BEST" "mixedflux_best"
+fi
 
 echo "DONE: $RUN_ROOT"
