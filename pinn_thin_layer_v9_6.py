@@ -4748,15 +4748,19 @@ def fixed_physics_validation_score(
                 loss_thin_conservation = torch.zeros((), device=device)
                 loss_thin_constitutive = torch.zeros((), device=device)
 
+            j_ref = characteristic_reaction_flux(gamma, active_k)
             loss_current_balance = torch.zeros((), device=device)
-            if current_balance_weight > 0.0:
+            diagnose_current_balance = bool(
+                current_balance_weight > 0.0 or
+                getattr(model_thin, "conservative_thin_current", False)
+            )
+            if diagnose_current_balance:
                 T_current = torch.linspace(
                     0.0, float(T_sim), n_points, device=device
                 ).reshape(-1, 1).requires_grad_(True)
                 current = thin_current_components(
                     model_thin, T_current, quadrature_points=16, create_graph=False
                 )
-                j_ref = characteristic_reaction_flux(gamma, active_k)
                 loss_current_balance = torch.mean(
                     (current["balance_residual"] / max(j_ref, 1e-8)) ** 2
                 )
@@ -4883,6 +4887,9 @@ def fixed_physics_validation_score(
                 "interface_ext": float(loss_interface_ext.detach().cpu()),
                 "reversal": float(loss_reversal.detach().cpu()),
                 "current_balance": float(loss_current_balance.detach().cpu()),
+                "current_balance_rmse": float(
+                    max(j_ref, 1e-8) * torch.sqrt(loss_current_balance).detach().cpu()
+                ),
                 "thin_conservation": float(loss_thin_conservation.detach().cpu()),
                 "thin_constitutive": float(loss_thin_constitutive.detach().cpu()),
             }
@@ -4920,7 +4927,8 @@ def parameterized_physics_validation_score(
     component_names = [
         "pde_thin", "pde_ext", "surface", "farfield", "initial",
         "bounds", "interface_thin", "interface_ext", "reversal",
-        "current_balance", "thin_conservation", "thin_constitutive",
+        "current_balance", "current_balance_rmse",
+        "thin_conservation", "thin_constitutive",
     ]
     result = {
         "score": aggregate,
@@ -5025,7 +5033,10 @@ def run_fdm_posterior_compare(model_thin, model_ext, epoch, arch_name, fdm_pkl,
     print("Evaluation only: FDM is not used in training loss.")
     print(f"Metrics JSON: {output_json}")
     print("field,rmse,mae,max_abs,bias,r2,nrmse")
-    for name in ["C_A", "C_B", "C_C", "C_D", "C_B_int", "C_C_int", "CV_J"]:
+    for name in [
+        "C_A", "C_B", "C_C", "C_D", "C_B_int", "C_C_int",
+        "CV_J_surface", "CV_J_conservative", "CV_J_surface_vs_conservative",
+    ]:
         if name not in metrics:
             continue
         row = metrics[name]
@@ -6027,6 +6038,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 f"pde=({validation['pde_thin']:.2e},{validation['pde_ext']:.2e}) "
                 f"iface=({validation['interface_thin']:.2e},{validation['interface_ext']:.2e}) "
                 f"current={validation['current_balance']:.2e} "
+                f"cv_self_rmse={validation['current_balance_rmse']:.3e} "
                 f"mixed=({validation['thin_conservation']:.2e},{validation['thin_constitutive']:.2e})",
                 flush=True,
             )

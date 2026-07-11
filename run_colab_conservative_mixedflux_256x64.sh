@@ -15,6 +15,7 @@ MAX_TRAIN_POINTS="${MAX_TRAIN_POINTS:-9000}"
 
 CLEAN_BEST="${CLEAN_BEST:-}"
 FDM_PKL="${FDM_PKL:-/content/gdrive/MyDrive/FDM_parameter_scale_0711/gamma1_k1_v42_thin_layer_catalytic_v42.pkl}"
+QUICK_CV_EVERY="${QUICK_CV_EVERY:-0}"
 SKIP_CONSERVATIVE="${SKIP_CONSERVATIVE:-0}"
 SKIP_MIXED="${SKIP_MIXED:-0}"
 CONSERVATIVE_BEST_OVERRIDE="${CONSERVATIVE_BEST_OVERRIDE:-}"
@@ -97,6 +98,13 @@ if [[ "$SKIP_MIXED" != "1" ]]; then
         --max-train-points "$MAX_TRAIN_POINTS" \
         --train-point-growth 0 \
         --current-balance-weight 0 \
+        --fdm-compare-pkl "$FDM_PKL" \
+        --fdm-compare-every "$QUICK_CV_EVERY" \
+        --fdm-compare-dir "$RUN_ROOT/quick_cv_compare" \
+        --fdm-compare-n-time 24 \
+        --fdm-compare-n-x-in 8 \
+        --fdm-compare-n-x-out 8 \
+        --fdm-compare-batch-size 4096 \
         --early-stop-check-every 50 \
         --early-stop-min-epochs 200 \
         --early-stop-patience-checks 3 \
