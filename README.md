@@ -725,3 +725,6 @@ FDM is read only after training.  Model selection and early stopping use fixed
 physics validation.  Posterior comparison now reports `CV_J_surface`,
 `CV_J_conservative`, and `CV_J_surface_vs_conservative`; the legacy `CV_J`
 field remains the surface-gradient metric.
+
+Set `SKIP_MIXED=1` to stop after the conservative stage and run only the
+recommended current-correction model.
