@@ -413,6 +413,54 @@ def build_models(
             history_grad=green_history_grad,
             cache_history=False,
         )
+    elif arch in {
+        "multiscale_film_tracegreen_clean_conservative",
+        "multiscale_film_tracegreen_clean_mixedflux",
+    }:
+        interface_state = pinn.InterfaceStateNet_v9_6_FilmTraceClean(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        thin_class = (
+            pinn.ThinLayerNet_v9_6_MultiscaleHermiteMixedFlux
+            if arch.endswith("mixedflux")
+            else pinn.ThinLayerNet_v9_6_MultiscaleHermiteConservative
+        )
+        model_thin = thin_class(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_FilmTraceGreenClean(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+            history_grad=green_history_grad,
+            cache_history=False,
+        )
+    elif arch == "multiscale_film_tracegreen_kparam":
+        if not np.isclose(pinn.gamma, pinn.REFERENCE_GAMMA, rtol=0.0, atol=1e-12):
+            raise ValueError("multiscale_film_tracegreen_kparam requires gamma=10")
+        interface_state = pinn.InterfaceStateNet_v9_6_FilmTraceKParam(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermiteKParam(
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+        )
+        model_ext = pinn.ExternalNet_v9_6_FilmTraceGreenKParam(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+            history_grad=green_history_grad,
+            cache_history=False,
+        )
     elif arch == "multiscale_green_grid_film_abel_ema":
         interface_state = pinn.InterfaceStateNet_v9_6_FilmAbelEMA(
             normalize_inputs=normalize_inputs,
@@ -448,9 +496,15 @@ def build_models(
     return model_thin.to(device), model_ext.to(device)
 
 
-def load_checkpoint(model_thin, model_ext, checkpoint):
+def load_checkpoint(model_thin, model_ext, checkpoint, allow_fixed_reference=False):
     state = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    pinn.validate_checkpoint_physical_parameters(state, checkpoint)
+    pinn.validate_checkpoint_physical_parameters(
+        state,
+        checkpoint,
+        model_ext=model_ext,
+        evaluation_k=pinn.model_active_k_cat(model_ext=model_ext),
+        allow_fixed_reference=allow_fixed_reference,
+    )
     try:
         model_thin.load_state_dict(state["model_thin_state_dict"], strict=True)
         model_ext.load_state_dict(state["model_ext_state_dict"], strict=True)
@@ -464,6 +518,9 @@ def configure_evaluation_parameters(args, fdm):
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     checkpoint_params = checkpoint.get("parameters", {})
     fdm_params = fdm.get("params", {})
+    is_kparam_checkpoint = (
+        checkpoint_params.get("parameterization") == pinn.KPARAM_PARAMETERIZATION
+    )
 
     gamma_value = args.gamma
     if gamma_value is None:
@@ -471,13 +528,16 @@ def configure_evaluation_parameters(args, fdm):
 
     k_cat_value = args.k_cat_star
     if k_cat_value is None:
-        k_cat_value = checkpoint_params.get(
-            "k_cat_star",
-            fdm_params.get("k_cat", fdm_params.get("k_cat_star", pinn.REFERENCE_K_CAT_STAR)),
-        )
+        fdm_k = fdm_params.get("k_cat", fdm_params.get("k_cat_star"))
+        if is_kparam_checkpoint or getattr(args, "zero_shot_fixed_reference", False):
+            k_cat_value = pinn.KPARAM_REFERENCE if fdm_k is None else fdm_k
+        else:
+            k_cat_value = checkpoint_params.get(
+                "k_cat_star",
+                pinn.REFERENCE_K_CAT_STAR if fdm_k is None else fdm_k,
+            )
 
     pinn.configure_physical_parameters(gamma_value, k_cat_value)
-    pinn.validate_checkpoint_physical_parameters(checkpoint, args.checkpoint)
 
     expected = {
         "gamma": float(pinn.gamma),
@@ -491,6 +551,7 @@ def configure_evaluation_parameters(args, fdm):
             raise ValueError(
                 f"FDM/PINN parameter mismatch for {name}: FDM={stored}, PINN={active}."
             )
+    return checkpoint
 
 
 def select_indices(size, n_select):
@@ -527,6 +588,35 @@ def predict_surface_current(model_thin, t_eval, device, batch_size):
     return np.concatenate(chunks)
 
 
+def predict_current_components(model_thin, t_eval, device, batch_size, quadrature_points=16):
+    outputs = {
+        "surface": [],
+        "reaction": [],
+        "inventory": [],
+        "conservative": [],
+        "balance_residual": [],
+    }
+    model_thin.eval()
+    for start in range(0, len(t_eval), batch_size):
+        t_batch = torch.from_numpy(
+            t_eval[start:start + batch_size].reshape(-1, 1).astype("float32")
+        ).to(device)
+        t_batch.requires_grad_(True)
+        with torch.enable_grad():
+            current = pinn.thin_current_components(
+                model_thin,
+                t_batch,
+                quadrature_points=quadrature_points,
+                create_graph=False,
+            )
+        outputs["surface"].append(current["J_surface"].detach().cpu().numpy().reshape(-1))
+        outputs["reaction"].append(current["J_reaction"].detach().cpu().numpy().reshape(-1))
+        outputs["inventory"].append(current["J_inventory"].detach().cpu().numpy().reshape(-1))
+        outputs["conservative"].append(current["J_conservative"].detach().cpu().numpy().reshape(-1))
+        outputs["balance_residual"].append(current["balance_residual"].detach().cpu().numpy().reshape(-1))
+    return {name: np.concatenate(chunks) for name, chunks in outputs.items()}
+
+
 def field_metrics(pinn_field, fdm_field):
     diff = pinn_field - fdm_field
     ss_res = float(np.sum(diff**2))
@@ -547,7 +637,7 @@ def field_metrics(pinn_field, fdm_field):
     }
 
 
-def build_cv_eval(model_thin, fdm, device, batch_size, n_cv):
+def build_cv_eval(model_thin, fdm, device, batch_size, n_cv, current_mode="both"):
     if "theta" not in fdm or "J" not in fdm or "t" not in fdm:
         return None
     t_all = np.asarray(fdm["t"], dtype=float)
@@ -557,13 +647,20 @@ def build_cv_eval(model_thin, fdm, device, batch_size, n_cv):
     t_cv = t_all[cv_idx]
     theta_cv = theta_all[cv_idx]
     j_fdm = j_fdm_all[cv_idx]
-    j_pinn = predict_surface_current(model_thin, t_cv, device, batch_size)
-    return {
+    current = predict_current_components(model_thin, t_cv, device, batch_size)
+    result = {
         "t": t_cv,
         "theta": theta_cv,
         "fdm_J": j_fdm,
-        "pinn_J": j_pinn,
+        "pinn_J": current["surface"],
+        "pinn_J_surface": current["surface"],
+        "pinn_J_reaction": current["reaction"],
+        "pinn_J_inventory": current["inventory"],
+        "pinn_J_conservative": current["conservative"],
+        "pinn_J_balance_residual": current["balance_residual"],
+        "current_mode": current_mode,
     }
+    return result
 
 
 def compare(args):
@@ -582,7 +679,14 @@ def compare(args):
         green_kernel_points=args.green_kernel_points,
         green_history_grad=not args.green_detach_history,
     )
-    epoch = load_checkpoint(model_thin, model_ext, args.checkpoint)
+    if pinn.is_k_parameterized(model_ext=model_ext):
+        pinn.set_model_k_cat(model_thin, model_ext, pinn.k_cat_star)
+    epoch = load_checkpoint(
+        model_thin,
+        model_ext,
+        args.checkpoint,
+        allow_fixed_reference=getattr(args, "zero_shot_fixed_reference", False),
+    )
 
     t_fdm = np.asarray(fdm["t"], dtype=float)
     x_in_fdm = np.asarray(fdm["x_in"], dtype=float)
@@ -622,6 +726,18 @@ def compare(args):
     )
     total_n = sum(pinn_eval[name].size for name in concentration_names)
     metrics["overall"] = {"rmse": float(np.sqrt(total_sq / total_n))}
+    dimensionless_errors = [
+        pinn_eval["C_A"] - fdm_eval["C_A"],
+        pinn_eval["C_B"] - fdm_eval["C_B"],
+        (pinn_eval["C_C"] - fdm_eval["C_C"]) / pinn.gamma,
+        (pinn_eval["C_D"] - fdm_eval["C_D"]) / pinn.gamma,
+    ]
+    metrics["overall_dimensionless"] = {
+        "rmse": float(np.sqrt(
+            sum(float(np.sum(error ** 2)) for error in dimensionless_errors) /
+            sum(error.size for error in dimensionless_errors)
+        ))
+    }
     metrics["C_C_over_gamma"] = field_metrics(
         pinn_eval["C_C"] / pinn.gamma,
         fdm_eval["C_C"] / pinn.gamma,
@@ -643,14 +759,52 @@ def compare(args):
         "C_C_int is evaluated from the FDM concentration field C_C[:,0], "
         "not from the stored C_C_int history array, whose first element is uninitialized."
     )
-    cv_eval = build_cv_eval(model_thin, fdm, device, args.batch_size, args.cv_points)
+    cv_eval = build_cv_eval(
+        model_thin,
+        fdm,
+        device,
+        args.batch_size,
+        args.cv_points,
+        current_mode=args.current_mode,
+    )
     if cv_eval is not None:
         metrics["CV_J"] = field_metrics(cv_eval["pinn_J"], cv_eval["fdm_J"])
+        metrics["CV_J_surface"] = field_metrics(
+            cv_eval["pinn_J_surface"], cv_eval["fdm_J"]
+        )
+        metrics["CV_J_conservative"] = field_metrics(
+            cv_eval["pinn_J_conservative"], cv_eval["fdm_J"]
+        )
+        metrics["CV_J_surface_vs_conservative"] = field_metrics(
+            cv_eval["pinn_J_surface"], cv_eval["pinn_J_conservative"]
+        )
         j_ref = pinn.characteristic_reaction_flux()
         metrics["CV_J_over_J_ref"] = field_metrics(
             cv_eval["pinn_J"] / j_ref,
             cv_eval["fdm_J"] / j_ref,
         )
+        fdm_cathodic = int(np.argmin(cv_eval["fdm_J"]))
+        pinn_cathodic = int(np.argmin(cv_eval["pinn_J"]))
+        fdm_anodic = int(np.argmax(cv_eval["fdm_J"]))
+        pinn_anodic = int(np.argmax(cv_eval["pinn_J"]))
+        metrics["CV_peaks"] = {
+            "cathodic": {
+                "fdm_J": float(cv_eval["fdm_J"][fdm_cathodic]),
+                "pinn_J": float(cv_eval["pinn_J"][pinn_cathodic]),
+                "J_error": float(cv_eval["pinn_J"][pinn_cathodic] - cv_eval["fdm_J"][fdm_cathodic]),
+                "fdm_theta": float(cv_eval["theta"][fdm_cathodic]),
+                "pinn_theta": float(cv_eval["theta"][pinn_cathodic]),
+                "theta_error": float(cv_eval["theta"][pinn_cathodic] - cv_eval["theta"][fdm_cathodic]),
+            },
+            "anodic": {
+                "fdm_J": float(cv_eval["fdm_J"][fdm_anodic]),
+                "pinn_J": float(cv_eval["pinn_J"][pinn_anodic]),
+                "J_error": float(cv_eval["pinn_J"][pinn_anodic] - cv_eval["fdm_J"][fdm_anodic]),
+                "fdm_theta": float(cv_eval["theta"][fdm_anodic]),
+                "pinn_theta": float(cv_eval["theta"][pinn_anodic]),
+                "theta_error": float(cv_eval["theta"][pinn_anodic] - cv_eval["theta"][fdm_anodic]),
+            },
+        }
 
     if args.output_figure:
         plot_residual_summary(
@@ -663,6 +817,8 @@ def compare(args):
             metrics,
             cv_eval=cv_eval,
         )
+    if args.output_current_figure and cv_eval is not None:
+        plot_current_decomposition(args.output_current_figure, cv_eval)
 
     if args.output_npz:
         np.savez_compressed(
@@ -672,7 +828,10 @@ def compare(args):
             x_out=x_out_eval,
             **{f"fdm_{k}": v for k, v in fdm_eval.items()},
             **{f"pinn_{k}": v for k, v in pinn_eval.items()},
-            **({f"cv_{k}": v for k, v in cv_eval.items()} if cv_eval is not None else {}),
+            **(
+                {f"cv_{k}": v for k, v in cv_eval.items() if k != "current_mode"}
+                if cv_eval is not None else {}
+            ),
         )
 
     if args.output_json:
@@ -697,8 +856,12 @@ def compare(args):
             f"{row['pinn_min']:.8e},{row['pinn_max']:.8e}"
         )
     print(f"overall_rmse,{metrics['overall']['rmse']:.8e}")
+    print(f"overall_dimensionless_rmse,{metrics['overall_dimensionless']['rmse']:.8e}")
     if "CV_J" in metrics:
-        for name in ["CV_J", "CV_J_over_J_ref"]:
+        for name in [
+            "CV_J", "CV_J_surface", "CV_J_conservative",
+            "CV_J_surface_vs_conservative", "CV_J_over_J_ref",
+        ]:
             row = metrics[name]
             print(
                 f"{name},{row['rmse']:.8e},{row['mae']:.8e},{row['max_abs']:.8e},"
@@ -771,7 +934,16 @@ def plot_residual_summary(
     ax = axes[1, 3]
     if cv_eval is not None:
         ax.plot(cv_eval["theta"], cv_eval["fdm_J"], color="blue", linewidth=2.2, label="FDM")
-        ax.plot(cv_eval["theta"], cv_eval["pinn_J"], color="#F58518", linewidth=1.8, linestyle="--", label="PINN")
+        if cv_eval.get("current_mode") in {"surface", "both"}:
+            ax.plot(
+                cv_eval["theta"], cv_eval["pinn_J_surface"],
+                color="#F58518", linewidth=1.8, linestyle="--", label="PINN surface"
+            )
+        if cv_eval.get("current_mode") in {"conservative", "both"}:
+            ax.plot(
+                cv_eval["theta"], cv_eval["pinn_J_conservative"],
+                color="#54A24B", linewidth=1.8, linestyle=":", label="PINN conservative"
+            )
         fdm_pc = int(np.argmin(cv_eval["fdm_J"]))
         fdm_pa = int(np.argmax(cv_eval["fdm_J"]))
         ax.scatter(cv_eval["theta"][fdm_pc], cv_eval["fdm_J"][fdm_pc], color="red", s=28, zorder=3)
@@ -797,6 +969,55 @@ def plot_residual_summary(
     plt.close(fig)
 
 
+def plot_current_decomposition(path, cv_eval):
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    t = cv_eval["t"]
+    theta = cv_eval["theta"]
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8), constrained_layout=True)
+
+    ax = axes[0, 0]
+    ax.plot(theta, cv_eval["fdm_J"], color="blue", linewidth=2.2, label="FDM")
+    ax.plot(theta, cv_eval["pinn_J_surface"], color="#F58518", linestyle="--", label="surface")
+    ax.plot(theta, cv_eval["pinn_J_conservative"], color="#54A24B", linestyle=":", label="conservative")
+    ax.set_title("CV current readouts")
+    ax.set_xlabel("Potential theta")
+    ax.set_ylabel("Current J")
+    ax.grid(alpha=0.3)
+    ax.legend()
+
+    ax = axes[0, 1]
+    ax.plot(t, cv_eval["pinn_J_reaction"], label=r"$-J_{rxn}$")
+    ax.plot(t, cv_eval["pinn_J_inventory"], label=r"$-dM_B/dt$")
+    ax.plot(t, cv_eval["pinn_J_conservative"], color="black", linewidth=2, label="sum")
+    ax.set_title("Conservative current decomposition")
+    ax.set_xlabel("T")
+    ax.set_ylabel("Current contribution")
+    ax.grid(alpha=0.3)
+    ax.legend()
+
+    ax = axes[1, 0]
+    ax.plot(t, cv_eval["pinn_J_balance_residual"], color="#E45756")
+    ax.axhline(0.0, color="black", linewidth=1)
+    ax.set_title("Surface - conservative current")
+    ax.set_xlabel("T")
+    ax.set_ylabel("Balance residual")
+    ax.grid(alpha=0.3)
+
+    ax = axes[1, 1]
+    ax.plot(t, cv_eval["pinn_J_surface"] - cv_eval["fdm_J"], label="surface - FDM")
+    ax.plot(t, cv_eval["pinn_J_conservative"] - cv_eval["fdm_J"], label="conservative - FDM")
+    ax.axhline(0.0, color="black", linewidth=1)
+    ax.set_title("Posterior current errors")
+    ax.set_xlabel("T")
+    ax.set_ylabel("PINN - FDM")
+    ax.grid(alpha=0.3)
+    ax.legend()
+
+    fig.savefig(output_path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Compare PINN C_A/C_B/C_C/C_D against exact downsampled FDM grid points."
@@ -807,7 +1028,9 @@ def main():
                         help="Fixed gamma. Defaults to checkpoint metadata, then FDM metadata.")
     parser.add_argument("--k-cat-star", type=float, default=None,
                         help="Fixed k_cat*. Defaults to checkpoint metadata, then FDM metadata.")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--zero-shot-fixed-reference", action="store_true",
+                        help="Allow a fixed k=1 clean checkpoint to seed kparam evaluation without resume semantics.")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_kparam", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256)
     parser.add_argument("--green-kernel-points", type=int, default=32)
     parser.add_argument("--green-detach-history", action="store_true")
@@ -820,6 +1043,10 @@ def main():
     parser.add_argument("--output-json", default="./concentration_compare_metrics.json")
     parser.add_argument("--output-npz", default="./concentration_compare_fields.npz")
     parser.add_argument("--output-figure", default="./concentration_residual_summary.png")
+    parser.add_argument("--output-current-figure", default="",
+                        help="Optional current decomposition and conservation diagnostic PNG.")
+    parser.add_argument("--current-mode", choices=["surface", "conservative", "both"], default="both",
+                        help="Current curves shown in figures; CV_J remains the surface-current metric.")
     parser.add_argument("--cv-points", type=int, default=2000, help="Number of FDM/PINN CV points plotted in the summary figure.")
     args = parser.parse_args()
     compare(args)

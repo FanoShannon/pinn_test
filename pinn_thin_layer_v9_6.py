@@ -54,6 +54,11 @@ X_ext_max = delta + X_ext_factor * np.sqrt(T_sim)
 
 REFERENCE_K_CAT_STAR = 1.0
 REFERENCE_GAMMA = 10.0
+KPARAM_MIN = 0.1
+KPARAM_MAX = 10.0
+KPARAM_REFERENCE = 1.0
+KPARAM_ANCHORS = (0.1, 1.0, 10.0)
+KPARAM_PARAMETERIZATION = "k_cat_log10"
 
 k_cat_star = REFERENCE_K_CAT_STAR
 gamma = REFERENCE_GAMMA
@@ -98,6 +103,57 @@ def flux_residual_scale(gamma_value=None, k_cat_value=None):
     current = characteristic_reaction_flux(gamma_value, k_cat_value)
     reference = characteristic_reaction_flux(REFERENCE_GAMMA, REFERENCE_K_CAT_STAR)
     return reference / max(current, 1e-12)
+
+
+def parameter_condition_cache_key(interface_state):
+    if interface_state is None:
+        return None
+    getter = getattr(interface_state, "condition_cache_key", None)
+    return getter() if getter is not None else None
+
+
+def model_active_k_cat(model_ext=None, model_thin=None):
+    for model in (model_ext, model_thin):
+        if model is None:
+            continue
+        getter = getattr(model, "active_k_cat", None)
+        if getter is not None:
+            return float(getter())
+        interface_state = getattr(model, "interface_state", None)
+        getter = getattr(interface_state, "active_k_cat", None)
+        if getter is not None:
+            return float(getter())
+    return float(k_cat_star)
+
+
+def set_model_k_cat(model_thin, model_ext, value):
+    setter = getattr(model_ext, "set_k_cat", None)
+    if setter is None:
+        setter = getattr(model_thin, "set_k_cat", None)
+    if setter is None:
+        raise TypeError("This architecture does not support runtime k_cat conditioning")
+    setter(value)
+
+
+def is_k_parameterized(model_ext=None, model_thin=None):
+    return bool(
+        getattr(model_ext, "k_parameterized", False) or
+        getattr(model_thin, "k_parameterized", False)
+    )
+
+
+def parameterization_metadata(model_ext):
+    if not is_k_parameterized(model_ext=model_ext):
+        return {}
+    metadata = {
+        "parameterization": KPARAM_PARAMETERIZATION,
+        "k_min": float(getattr(model_ext, "k_min", KPARAM_MIN)),
+        "k_max": float(getattr(model_ext, "k_max", KPARAM_MAX)),
+        "k_reference": float(getattr(model_ext, "k_reference", KPARAM_REFERENCE)),
+        "k_sampling": "one_k_per_step_log_uniform_with_anchors",
+    }
+    metadata.update(getattr(model_ext, "k_sampling_metadata", {}))
+    return metadata
 
 
 def smooth_bounded_concentration(value, upper, transition_fraction=0.01,
@@ -183,6 +239,12 @@ MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_TRACEGREEN_MIXEDABEL_PATH = 
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_TRACEGREEN_MIXEDABEL_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel_best.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_best.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_CONSERVATIVE_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_conservative.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_CONSERVATIVE_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_conservative_best.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_MIXEDFLUX_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_mixedflux.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_MIXEDFLUX_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_mixedflux_best.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_kparam.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_kparam_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema_best.pth'
 MODEL_V96_MULTISCALE_BUFFER_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_buffer.pth'
@@ -269,6 +331,15 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     elif arch == "multiscale_film_tracegreen_clean":
         current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_PATH
         best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_BEST_PATH
+    elif arch == "multiscale_film_tracegreen_clean_conservative":
+        current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_CONSERVATIVE_PATH
+        best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_CONSERVATIVE_BEST_PATH
+    elif arch == "multiscale_film_tracegreen_clean_mixedflux":
+        current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_MIXEDFLUX_PATH
+        best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_MIXEDFLUX_BEST_PATH
+    elif arch == "multiscale_film_tracegreen_kparam":
+        current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_PATH
+        best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_BEST_PATH
     elif arch == "multiscale_green_grid_film_abel_ema":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH
@@ -815,6 +886,20 @@ class InterfaceStateNet_v9_6_FilmAbel(nn.Module):
     def clear_step_cache(self):
         self._film_abel_cache = None
 
+    def active_k_cat(self):
+        return float(k_cat_star)
+
+    def _active_k_tensor(self, reference):
+        return torch.as_tensor(
+            self.active_k_cat(), device=reference.device, dtype=reference.dtype
+        )
+
+    def condition_cache_key(self):
+        return None
+
+    def _history_feature_flux_scale(self):
+        return max(float(k_cat_star * gamma), 1.0)
+
     def _abel_gain(self):
         return torch.exp(0.5 * torch.tanh(self.abel_gain_raw))
 
@@ -860,9 +945,10 @@ class InterfaceStateNet_v9_6_FilmAbel(nn.Module):
 
     def _film_reaction(self, c_b_surface, c_c_int):
         c_c_pos = torch.clamp(c_c_int, min=1e-8)
-        denom = 1.0 + (k_cat_star * delta / D_rel_B) * c_c_pos
+        k_value = self._active_k_tensor(c_c_pos)
+        denom = 1.0 + (k_value * delta / D_rel_B) * c_c_pos
         c_b_int = c_b_surface / torch.clamp(denom, min=1e-8)
-        j_rxn = k_cat_star * c_c_pos * c_b_int
+        j_rxn = k_value * c_c_pos * c_b_int
         surface_slope = -j_rxn / D_rel_B
         return c_b_int, j_rxn, surface_slope
 
@@ -881,8 +967,9 @@ class InterfaceStateNet_v9_6_FilmAbel(nn.Module):
                         c_d_prior, j_hist, d_j_hist, q_hist, memories):
         theta_scale = max(abs(float(theta_i)), abs(float(theta_switch)), 1.0)
         theta_dot_scale = theta_scale / max(float(T_sim), 1e-12)
-        j_scale = max(float(k_cat_star * gamma), 1.0)
-        q_scale = max(j_scale * float(T_sim), 1.0)
+        j_scale = self._history_feature_flux_scale()
+        q_floor = 1e-8 if getattr(self, "k_parameterized", False) else 1.0
+        q_scale = max(j_scale * float(T_sim), q_floor)
         cb_dt_scale = max(theta_dot_scale, 1.0)
         lambdas = self.film_abel_memory_lambdas.to(device=T_raw.device, dtype=T_raw.dtype)
         memory_scale = torch.clamp(j_scale * lambdas, min=1e-6)
@@ -939,7 +1026,12 @@ class InterfaceStateNet_v9_6_FilmAbel(nn.Module):
 
     def _history_grid(self, T_ref):
         use_cache = self.training and torch.is_grad_enabled()
-        cache_key = (T_ref.device, T_ref.dtype, torch.is_grad_enabled())
+        cache_key = (
+            T_ref.device,
+            T_ref.dtype,
+            torch.is_grad_enabled(),
+            self.condition_cache_key(),
+        )
         if use_cache and self._film_abel_cache is not None and self._film_abel_cache[0] == cache_key:
             return self._film_abel_cache[1]
 
@@ -1156,7 +1248,7 @@ class InterfaceStateNet_v9_6_FilmAbelKernelMix(InterfaceStateNet_v9_6_FilmAbel):
     def _dynamic_phase_features(self, theta, theta_dot, j_hist, d_j_hist):
         theta_scale = max(abs(float(theta_i)), abs(float(theta_switch)), 1.0)
         theta_dot_scale = theta_scale / max(float(T_sim), 1e-12)
-        j_scale = max(float(k_cat_star * gamma), 1.0)
+        j_scale = self._history_feature_flux_scale()
         dj_scale = max(j_scale / max(float(T_sim), 1e-12), 1e-12)
         return torch.cat([
             theta / theta_scale,
@@ -1221,7 +1313,12 @@ class InterfaceStateNet_v9_6_FilmAbelKernelMix(InterfaceStateNet_v9_6_FilmAbel):
 
     def _history_grid(self, T_ref):
         use_cache = self.training and torch.is_grad_enabled()
-        cache_key = (T_ref.device, T_ref.dtype, torch.is_grad_enabled())
+        cache_key = (
+            T_ref.device,
+            T_ref.dtype,
+            torch.is_grad_enabled(),
+            self.condition_cache_key(),
+        )
         if use_cache and self._film_abel_cache is not None and self._film_abel_cache[0] == cache_key:
             return self._film_abel_cache[1]
 
@@ -1618,6 +1715,54 @@ class InterfaceStateNet_v9_6_FilmTraceClean(
         return torch.where(T_raw <= 0.0, torch.zeros_like(mapped), mapped)
 
 
+class InterfaceStateNet_v9_6_FilmTraceKParam(InterfaceStateNet_v9_6_FilmTraceClean):
+    """Clean Film-Abel state with one runtime k condition per optimizer step."""
+
+    def __init__(self, *args, k_min=KPARAM_MIN, k_max=KPARAM_MAX,
+                 k_reference=KPARAM_REFERENCE, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.k_parameterized = True
+        self.k_min = float(k_min)
+        self.k_max = float(k_max)
+        self.k_reference = float(k_reference)
+        if not 0.0 < self.k_min <= self.k_reference <= self.k_max:
+            raise ValueError("Expected 0 < k_min <= k_reference <= k_max")
+        self.register_buffer(
+            "_k_cat_condition",
+            torch.tensor(self.k_reference, dtype=torch.float64),
+            persistent=False,
+        )
+
+    def set_k_cat(self, value):
+        value = float(value)
+        if not np.isfinite(value) or not self.k_min <= value <= self.k_max:
+            raise ValueError(
+                f"k_cat={value} is outside trained range [{self.k_min}, {self.k_max}]"
+            )
+        if not np.isclose(value, self.active_k_cat(), rtol=0.0, atol=1e-12):
+            self._k_cat_condition.fill_(value)
+            self.clear_step_cache()
+
+    def active_k_cat(self):
+        return float(self._k_cat_condition.detach().cpu())
+
+    def _active_k_tensor(self, reference):
+        return self._k_cat_condition.to(device=reference.device, dtype=reference.dtype)
+
+    def condition_cache_key(self):
+        return self.active_k_cat()
+
+    def log_k_condition(self, reference):
+        value = self._k_cat_condition.to(device=reference.device, dtype=reference.dtype)
+        return torch.log10(value / self.k_reference)
+
+    def _history_feature_flux_scale(self):
+        return max(
+            characteristic_reaction_flux(gamma, self.active_k_cat()),
+            1e-8,
+        )
+
+
 class HISInterfaceStateNet_v9_6(nn.Module):
     """Minimal interface-state block for the HIS-PINN prototype.
 
@@ -1717,16 +1862,41 @@ class ThinLayerNet_v9_6_MultiscaleHermite(nn.Module):
         self.correction_scale = 1.5
         self.surface_bubble_scale = 0.25
 
+    def _raw_field(self, x_net, T_raw, X_raw):
+        del T_raw, X_raw
+        return self.net(x_net)
+
+    def _network_inputs(self, T_raw, X_raw):
+        if self.normalize_inputs:
+            return torch.cat([
+                normalize_time(T_raw),
+                normalize_thin_x(X_raw),
+            ], dim=1)
+        return torch.cat([T_raw, X_raw], dim=1)
+
+    def surface_current_state(self, T_raw):
+        """Electrode current encoded by the Hermite left-end slope.
+
+        ``surface_bubble = s(1-s)^2`` is exactly the cubic Hermite ``h10``
+        basis.  Its coefficient can therefore be interpreted as a correction
+        to the left-end B slope rather than an unrelated field residual.
+        """
+        X_surface = torch.zeros_like(T_raw)
+        x_net = self._network_inputs(T_raw, X_surface)
+        state = self.interface_state(T_raw)
+        raw_surface = self._raw_field(x_net, T_raw, X_surface)
+        time_gate = 1.0 - torch.exp(-torch.clamp(T_raw, min=0.0) / (0.05 * T_sim))
+        b_slope = (
+            state["surface_slope"] +
+            (self.surface_bubble_scale / delta) * time_gate *
+            torch.tanh(raw_surface[:, 1:2])
+        )
+        return D_rel_A * b_slope
+
     def forward(self, x_input):
         T_raw = x_input[:, 0:1]
         X_raw = x_input[:, 1:2]
-        if self.normalize_inputs:
-            x_net = torch.cat([
-                normalize_time(T_raw),
-                normalize_thin_x(X_raw)
-            ], dim=1)
-        else:
-            x_net = x_input
+        x_net = self._network_inputs(T_raw, X_raw)
 
         state = self.interface_state(T_raw)
         c_b_surface = state["C_B_surface"]
@@ -1752,7 +1922,7 @@ class ThinLayerNet_v9_6_MultiscaleHermite(nn.Module):
             h11 * delta * interface_slope
         )
 
-        raw_field = self.net(x_net)
+        raw_field = self._raw_field(x_net, T_raw, X_raw)
         endpoint_bubble = s2 * (1.0 - s) ** 2
         surface_bubble = s * (1.0 - s) ** 2
         correction = time_gate * (
@@ -1762,6 +1932,128 @@ class ThinLayerNet_v9_6_MultiscaleHermite(nn.Module):
         C_B = c_b_base + correction
         C_A = 1.0 - C_B
         return C_A, C_B
+
+
+class ThinLayerNet_v9_6_MultiscaleHermiteKParam(ThinLayerNet_v9_6_MultiscaleHermite):
+    """Hermite thin field with a zero-at-k=1 conditional correction adapter."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.k_parameterized = True
+        self.k_adapter = MultiscaleResidualHead(
+            out_features=2,
+            width=64,
+            depth=2,
+            in_features=3,
+        )
+        nn.init.zeros_(self.k_adapter.net[-1].weight)
+        nn.init.zeros_(self.k_adapter.net[-1].bias)
+
+    def active_k_cat(self):
+        return self.interface_state.active_k_cat()
+
+    def set_k_cat(self, value):
+        self.interface_state.set_k_cat(value)
+
+    def _raw_field(self, x_net, T_raw, X_raw):
+        base = self.net(x_net)
+        kappa = self.interface_state.log_k_condition(T_raw)
+        k_feature = torch.ones_like(T_raw) * kappa
+        if self.normalize_inputs:
+            adapter_input = torch.cat([
+                normalize_time(T_raw),
+                normalize_thin_x(X_raw),
+                k_feature,
+            ], dim=1)
+        else:
+            adapter_input = torch.cat([T_raw, X_raw, k_feature], dim=1)
+        return base + k_feature * self.k_adapter(adapter_input)
+
+
+class ThinLayerNet_v9_6_MultiscaleHermiteConservative(ThinLayerNet_v9_6_MultiscaleHermite):
+    """Checkpoint-compatible Hermite thin layer with inventory supervision."""
+
+    conservative_thin_current = True
+
+
+class ThinLayerNet_v9_6_MultiscaleHermiteMixedFlux(
+    ThinLayerNet_v9_6_MultiscaleHermiteConservative
+):
+    """Hermite concentration plus an explicit conservative B-flux field."""
+
+    mixed_flux_thin = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.flux_net = MultiscaleResidualHead(
+            out_features=1,
+            width=128,
+            depth=3,
+            in_features=2,
+        )
+        nn.init.zeros_(self.flux_net.net[-1].weight)
+        nn.init.zeros_(self.flux_net.net[-1].bias)
+
+    def flux_b(self, x_input):
+        T_raw = x_input[:, 0:1]
+        X_raw = x_input[:, 1:2]
+        s = torch.clamp(X_raw / delta, 0.0, 1.0)
+        state = self.interface_state(T_raw)
+        j_electrode = self.surface_current_state(T_raw)
+        q_surface = -(D_rel_B / D_rel_A) * j_electrode
+        q_interface = state["J_rxn"]
+        raw_flux = self.flux_net(self._network_inputs(T_raw, X_raw))
+        active_k = model_active_k_cat(model_thin=self)
+        j_ref = characteristic_reaction_flux(gamma, active_k)
+        interior = j_ref * s * (1.0 - s) * torch.tanh(raw_flux)
+        return (1.0 - s) * q_surface + s * q_interface + interior
+
+
+def thin_current_components(model_thin, T_raw, quadrature_points=16, create_graph=False):
+    """Return surface, reaction, inventory, and conservative thin-film currents."""
+    quadrature_points = max(4, int(quadrature_points))
+    if not T_raw.requires_grad:
+        T_raw = T_raw.detach().clone().requires_grad_(True)
+
+    X_surface = torch.zeros_like(T_raw, requires_grad=True)
+    C_A_surface, _ = model_thin(torch.cat([T_raw, X_surface], dim=1))
+    C_A_X_surface = torch.autograd.grad(
+        C_A_surface.sum(),
+        X_surface,
+        create_graph=create_graph,
+        retain_graph=True,
+    )[0]
+    J_surface = -D_rel_A * C_A_X_surface
+
+    nodes_np, weights_np = np.polynomial.legendre.leggauss(quadrature_points)
+    nodes = torch.as_tensor(nodes_np, device=T_raw.device, dtype=T_raw.dtype)
+    weights = torch.as_tensor(weights_np, device=T_raw.device, dtype=T_raw.dtype)
+    X_quad = (0.5 * delta * (nodes + 1.0)).reshape(1, -1)
+    X_quad = X_quad.expand(T_raw.shape[0], -1)
+    T_quad = T_raw.expand(-1, quadrature_points)
+    quad_inputs = torch.stack([T_quad.reshape(-1), X_quad.reshape(-1)], dim=1)
+    _, C_B_quad = model_thin(quad_inputs)
+    C_B_quad = C_B_quad.reshape(T_raw.shape[0], quadrature_points)
+    M_B = 0.5 * delta * torch.sum(C_B_quad * weights.reshape(1, -1), dim=1, keepdim=True)
+    dM_B_dt = torch.autograd.grad(
+        M_B.sum(),
+        T_raw,
+        create_graph=create_graph,
+        retain_graph=create_graph,
+    )[0]
+
+    state = model_thin.interface_state(T_raw)
+    J_reaction = -state["J_rxn"]
+    J_inventory = -dM_B_dt
+    J_conservative = J_reaction + J_inventory
+    return {
+        "J_surface": J_surface,
+        "J_reaction": J_reaction,
+        "J_inventory": J_inventory,
+        "J_conservative": J_conservative,
+        "balance_residual": J_surface - J_conservative,
+        "M_B": M_B,
+    }
 
 
 class ExternalNet_v9_6_Multiscale(nn.Module):
@@ -2087,7 +2379,13 @@ class ExternalNet_v9_6_MultiscaleGreenGrid(nn.Module):
 
     def _history_grid(self, T_ref):
         use_cache = self.cache_history and self.training and torch.is_grad_enabled()
-        cache_key = (T_ref.device, T_ref.dtype, torch.is_grad_enabled(), self.history_grad)
+        cache_key = (
+            T_ref.device,
+            T_ref.dtype,
+            torch.is_grad_enabled(),
+            self.history_grad,
+            parameter_condition_cache_key(self.interface_state),
+        )
         if use_cache and self._history_cache is not None and self._history_cache[0] == cache_key:
             return self._history_cache[1]
 
@@ -2589,7 +2887,12 @@ class ExternalNet_v9_6_MultiscaleGreenGridDynamicCausalConv(ExternalNet_v9_6_Mul
 
     def _dynamic_source_grid(self, T_ref):
         use_cache = self.cache_history and self.training and torch.is_grad_enabled()
-        cache_key = (T_ref.device, T_ref.dtype, torch.is_grad_enabled())
+        cache_key = (
+            T_ref.device,
+            T_ref.dtype,
+            torch.is_grad_enabled(),
+            parameter_condition_cache_key(self.interface_state),
+        )
         if use_cache and self._dynamic_source_cache is not None and self._dynamic_source_cache[0] == cache_key:
             return self._dynamic_source_cache[1]
 
@@ -3019,6 +3322,24 @@ class ExternalNet_v9_6_FilmTraceGreenClean(ExternalNet_v9_6_MultiscaleGreenGridF
         scale = self.clean_residual_scale.to(device=T_raw.device, dtype=T_raw.dtype)
         concentration_factor = float(self.gamma) / REFERENCE_GAMMA
         return concentration_factor * scale * super().tracegreen_residual_correction(T_raw, z, x_net)
+
+
+class ExternalNet_v9_6_FilmTraceGreenKParam(ExternalNet_v9_6_FilmTraceGreenClean):
+    """TraceGreen external field driven by a shared runtime k condition."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.k_parameterized = True
+        self.k_min = float(self.interface_state.k_min)
+        self.k_max = float(self.interface_state.k_max)
+        self.k_reference = float(self.interface_state.k_reference)
+
+    def active_k_cat(self):
+        return self.interface_state.active_k_cat()
+
+    def set_k_cat(self, value):
+        self.interface_state.set_k_cat(value)
+        self.clear_step_cache()
 
 
 class ExternalNet_v9_6_MultiscaleGreenGridMemory(ExternalNet_v9_6_MultiscaleGreenGridDynamic):
@@ -3846,6 +4167,62 @@ def create_models_v96(
                 cache_history=green_cache_history,
             ),
         )
+    if arch in {
+        "multiscale_film_tracegreen_clean_conservative",
+        "multiscale_film_tracegreen_clean_mixedflux",
+    }:
+        interface_state = InterfaceStateNet_v9_6_FilmTraceClean(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        thin_class = (
+            ThinLayerNet_v9_6_MultiscaleHermiteMixedFlux
+            if arch.endswith("mixedflux")
+            else ThinLayerNet_v9_6_MultiscaleHermiteConservative
+        )
+        return (
+            thin_class(
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+            ),
+            ExternalNet_v9_6_FilmTraceGreenClean(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
+    if arch == "multiscale_film_tracegreen_kparam":
+        if not np.isclose(gamma, REFERENCE_GAMMA, rtol=0.0, atol=1e-12):
+            raise ValueError(
+                "multiscale_film_tracegreen_kparam fixes gamma=10; "
+                f"received gamma={gamma}"
+            )
+        interface_state = InterfaceStateNet_v9_6_FilmTraceKParam(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        interface_state.set_k_cat(k_cat_star)
+        return (
+            ThinLayerNet_v9_6_MultiscaleHermiteKParam(
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+            ),
+            ExternalNet_v9_6_FilmTraceGreenKParam(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
     if arch == "multiscale_green_grid_film_abel_ema":
         interface_state = InterfaceStateNet_v9_6_FilmAbelEMA(
             normalize_inputs=normalize_inputs,
@@ -3906,6 +4283,22 @@ def potential_theta_dot_smooth(T, width=0.015):
 
 
 # ==================== 模型保存/加载 ====================
+def checkpoint_parameters(model_ext):
+    parameters = {
+        'sigma': sigma, 'theta_i': theta_i, 'theta_switch': theta_switch,
+        'T_sim': T_sim, 'delta': delta, 'X_ext_max': X_ext_max,
+        'gamma': gamma,
+        'k_cat_star': KPARAM_REFERENCE if is_k_parameterized(model_ext=model_ext) else k_cat_star,
+        'lambda_factor': lambda_factor,
+        'normalize_inputs': USE_NORMALIZED_COORDS,
+        'green_time_grid': getattr(model_ext, 'time_grid_points', None),
+        'green_kernel_points': getattr(model_ext, 'kernel_points', None),
+        'green_history_grad': getattr(model_ext, 'history_grad', None),
+    }
+    parameters.update(parameterization_metadata(model_ext))
+    return parameters
+
+
 def save_model_v96(model_thin, model_ext, optimizer, scheduler, epoch, path, 
                    loss_history=None, best_val_loss=None, suffix=''):
     save_path = path.replace('.pth', f'{suffix}.pth') if suffix else path
@@ -3928,15 +4321,7 @@ def save_model_v96(model_thin, model_ext, optimizer, scheduler, epoch, path,
         'loss_history': loss_history if loss_history else {},
         'best_val_loss': best_val_loss if best_val_loss is not None else float('inf'),
         'rng_state': rng_state,
-        'parameters': {
-            'sigma': sigma, 'theta_i': theta_i, 'theta_switch': theta_switch,
-            'T_sim': T_sim, 'delta': delta, 'X_ext_max': X_ext_max,
-            'gamma': gamma, 'k_cat_star': k_cat_star, 'lambda_factor': lambda_factor,
-            'normalize_inputs': USE_NORMALIZED_COORDS,
-            'green_time_grid': getattr(model_ext, 'time_grid_points', None),
-            'green_kernel_points': getattr(model_ext, 'kernel_points', None),
-            'green_history_grad': getattr(model_ext, 'history_grad', None),
-        }
+        'parameters': checkpoint_parameters(model_ext),
     }, save_path)
     print(f"✅ Model saved to {save_path} (epoch {epoch})")
 
@@ -3963,24 +4348,77 @@ def load_compatible_state_dict(module, state_dict, module_name):
     return result
 
 
-def validate_checkpoint_physical_parameters(checkpoint, path):
+def validate_checkpoint_physical_parameters(
+    checkpoint,
+    path,
+    model_ext=None,
+    evaluation_k=None,
+    allow_fixed_reference=False,
+):
     parameters = checkpoint.get('parameters', {})
-    for name, active in (("gamma", gamma), ("k_cat_star", k_cat_star)):
+    for name, active in (("gamma", gamma), ("delta", delta)):
         stored = parameters.get(name)
         if stored is None:
             continue
         if not np.isclose(float(stored), float(active), rtol=1e-7, atol=1e-10):
             raise ValueError(
                 f"Checkpoint parameter mismatch for {name}: checkpoint={stored}, "
-                f"active={active}. Start a fresh fixed-parameter Stage 1 run or "
-                f"select a checkpoint trained with the same parameters: {path}"
+                f"active={active}. Select a checkpoint trained with matching physics: {path}"
+            )
+
+    checkpoint_kind = parameters.get("parameterization", "fixed")
+    target_is_kparam = is_k_parameterized(model_ext=model_ext)
+    if target_is_kparam:
+        active_k = model_active_k_cat(model_ext=model_ext) if evaluation_k is None else float(evaluation_k)
+        k_min = float(getattr(model_ext, "k_min", KPARAM_MIN))
+        k_max = float(getattr(model_ext, "k_max", KPARAM_MAX))
+        if not k_min <= active_k <= k_max:
+            raise ValueError(
+                f"Evaluation k_cat={active_k} is outside trained range [{k_min}, {k_max}]"
+            )
+        if checkpoint_kind == KPARAM_PARAMETERIZATION:
+            for name, active in (
+                ("k_min", k_min),
+                ("k_max", k_max),
+                ("k_reference", float(getattr(model_ext, "k_reference", KPARAM_REFERENCE))),
+            ):
+                stored = parameters.get(name)
+                if stored is None or not np.isclose(float(stored), active, rtol=1e-7, atol=1e-10):
+                    raise ValueError(
+                        f"Checkpoint k-parameterization mismatch for {name}: "
+                        f"checkpoint={stored}, active={active}: {path}"
+                    )
+        elif allow_fixed_reference:
+            stored_k = float(parameters.get("k_cat_star", KPARAM_REFERENCE))
+            if not np.isclose(stored_k, KPARAM_REFERENCE, rtol=1e-7, atol=1e-10):
+                raise ValueError(
+                    "Only a fixed k_cat=1 checkpoint can warm-start/zero-shot the "
+                    f"k-parameterized model; checkpoint k_cat={stored_k}: {path}"
+                )
+        else:
+            raise ValueError(
+                "A fixed-parameter checkpoint cannot resume a k-parameterized run. "
+                "Use --warm-start-checkpoint for the fixed k=1 clean baseline."
+            )
+    else:
+        if checkpoint_kind == KPARAM_PARAMETERIZATION:
+            raise ValueError(
+                f"A k-parameterized checkpoint requires the kparam architecture: {path}"
+            )
+        stored_k = parameters.get("k_cat_star")
+        if stored_k is not None and not np.isclose(
+            float(stored_k), float(k_cat_star), rtol=1e-7, atol=1e-10
+        ):
+            raise ValueError(
+                f"Checkpoint parameter mismatch for k_cat_star: checkpoint={stored_k}, "
+                f"active={k_cat_star}. Select a matching fixed-parameter checkpoint: {path}"
             )
 
 
 def load_model_v96(model_thin, model_ext, optimizer, scheduler, path, load_optimizer_state=True):
     if os.path.exists(path):
         checkpoint = torch.load(path, map_location='cpu', weights_only=False)
-        validate_checkpoint_physical_parameters(checkpoint, path)
+        validate_checkpoint_physical_parameters(checkpoint, path, model_ext=model_ext)
         load_compatible_state_dict(model_thin, checkpoint['model_thin_state_dict'], "Thin model")
         load_compatible_state_dict(model_ext, checkpoint['model_ext_state_dict'], "External model")
         optimizer_loaded = False
@@ -4016,6 +4454,29 @@ def load_model_v96(model_thin, model_ext, optimizer, scheduler, path, load_optim
         print(f"✅ Model loaded from {path} (epoch {epoch})")
         return epoch, loss_history, best_val_loss
     return 0, {}, float('inf')
+
+
+def warm_start_model_v96(model_thin, model_ext, path):
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+    validate_checkpoint_physical_parameters(
+        checkpoint,
+        path,
+        model_ext=model_ext,
+        evaluation_k=KPARAM_REFERENCE,
+        allow_fixed_reference=True,
+    )
+    load_compatible_state_dict(
+        model_thin, checkpoint['model_thin_state_dict'], "Thin warm-start model"
+    )
+    load_compatible_state_dict(
+        model_ext, checkpoint['model_ext_state_dict'], "External warm-start model"
+    )
+    if is_k_parameterized(model_ext=model_ext):
+        set_model_k_cat(model_thin, model_ext, KPARAM_REFERENCE)
+    print(f"Warm-started model weights from {path}; optimizer and epoch were not loaded")
+    return checkpoint
 
 
 def normalize_loss_history(loss_history):
@@ -4060,7 +4521,8 @@ def verify_interface_physics(model_thin, model_ext, device, n_test=50):
         C_C_X_int = torch.autograd.grad(C_C_int.sum(), X_int, create_graph=True, retain_graph=True)[0]
         C_D_X_int = torch.autograd.grad(C_D_int.sum(), X_int, create_graph=True, retain_graph=True)[0]
 
-        J_rxn = k_cat_star * C_B_int * C_C_int
+        active_k = model_active_k_cat(model_ext=model_ext, model_thin=model_thin)
+        J_rxn = active_k * C_B_int * C_C_int
         J_A = -D_rel_A * C_A_X_int
         J_B = -D_rel_B * C_B_X_int
         if (
@@ -4132,7 +4594,8 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
         X_int = torch.ones_like(T_test) * delta
         _, C_B_int = model_thin(torch.cat([T_test, X_int], dim=1))
         C_C_int, _ = model_ext(torch.cat([T_test, X_int], dim=1))
-        J_rxn_mean = torch.mean(k_cat_star * C_B_int * C_C_int).item()
+        active_k = model_active_k_cat(model_ext=model_ext, model_thin=model_thin)
+        J_rxn_mean = torch.mean(active_k * C_B_int * C_C_int).item()
         C_B_int_mean = torch.mean(C_B_int).item()
         C_C_int_mean = torch.mean(C_C_int).item()
 
@@ -4231,19 +4694,26 @@ def fixed_physics_validation_score(
     thin_interface_weight,
     ext_interface_weight,
     n_points=96,
+    k_value=None,
+    current_balance_weight=0.0,
 ):
     """Deterministic, FDM-free physics score for checkpointing and early stop."""
     n_points = max(32, int(n_points))
     thin_was_training = model_thin.training
     ext_was_training = model_ext.training
+    previous_k = model_active_k_cat(model_ext=model_ext, model_thin=model_thin)
+    if k_value is not None:
+        set_model_k_cat(model_thin, model_ext, k_value)
     model_thin.eval()
     model_ext.eval()
     if hasattr(model_ext, "clear_step_cache"):
         model_ext.clear_step_cache()
 
     ext_scale = external_residual_scale()
-    flux_scale = flux_residual_scale()
+    active_k = model_active_k_cat(model_ext=model_ext, model_thin=model_thin)
+    flux_scale = flux_residual_scale(k_cat_value=active_k)
     is_flux_state = hasattr(model_ext, "flux_d")
+    is_mixed_thin = bool(getattr(model_thin, "mixed_flux_thin", False))
 
     def fixed_pair(x_min, x_max, multiplier):
         index = torch.arange(n_points, device=device, dtype=torch.float32)
@@ -4258,16 +4728,38 @@ def fixed_physics_validation_score(
         with torch.enable_grad():
             T_thin, X_thin = fixed_pair(0.0, delta, 37)
             C_A, C_B = model_thin(torch.cat([T_thin, X_thin], dim=1))
-            C_A_T = torch.autograd.grad(C_A.sum(), T_thin, create_graph=True, retain_graph=True)[0]
-            C_A_X = torch.autograd.grad(C_A.sum(), X_thin, create_graph=True, retain_graph=True)[0]
-            C_A_XX = torch.autograd.grad(C_A_X.sum(), X_thin, create_graph=True, retain_graph=True)[0]
             C_B_T = torch.autograd.grad(C_B.sum(), T_thin, create_graph=True, retain_graph=True)[0]
             C_B_X = torch.autograd.grad(C_B.sum(), X_thin, create_graph=True, retain_graph=True)[0]
-            C_B_XX = torch.autograd.grad(C_B_X.sum(), X_thin, create_graph=True)[0]
-            loss_pde_thin = (
-                torch.mean((C_A_T - D_rel_A * C_A_XX) ** 2) +
-                torch.mean((C_B_T - D_rel_B * C_B_XX) ** 2)
-            )
+            if is_mixed_thin:
+                q_B = model_thin.flux_b(torch.cat([T_thin, X_thin], dim=1))
+                q_B_X = torch.autograd.grad(q_B.sum(), X_thin, create_graph=True)[0]
+                loss_thin_conservation = torch.mean((C_B_T + q_B_X) ** 2)
+                loss_thin_constitutive = torch.mean((q_B + D_rel_B * C_B_X) ** 2)
+                loss_pde_thin = loss_thin_conservation + 2.0 * loss_thin_constitutive
+            else:
+                C_A_T = torch.autograd.grad(C_A.sum(), T_thin, create_graph=True, retain_graph=True)[0]
+                C_A_X = torch.autograd.grad(C_A.sum(), X_thin, create_graph=True, retain_graph=True)[0]
+                C_A_XX = torch.autograd.grad(C_A_X.sum(), X_thin, create_graph=True, retain_graph=True)[0]
+                C_B_XX = torch.autograd.grad(C_B_X.sum(), X_thin, create_graph=True)[0]
+                loss_pde_thin = (
+                    torch.mean((C_A_T - D_rel_A * C_A_XX) ** 2) +
+                    torch.mean((C_B_T - D_rel_B * C_B_XX) ** 2)
+                )
+                loss_thin_conservation = torch.zeros((), device=device)
+                loss_thin_constitutive = torch.zeros((), device=device)
+
+            loss_current_balance = torch.zeros((), device=device)
+            if current_balance_weight > 0.0:
+                T_current = torch.linspace(
+                    0.0, float(T_sim), n_points, device=device
+                ).reshape(-1, 1).requires_grad_(True)
+                current = thin_current_components(
+                    model_thin, T_current, quadrature_points=16, create_graph=False
+                )
+                j_ref = characteristic_reaction_flux(gamma, active_k)
+                loss_current_balance = torch.mean(
+                    (current["balance_residual"] / max(j_ref, 1e-8)) ** 2
+                )
 
             T_ext, X_ext = fixed_pair(delta, X_ext_max, 53)
             ext_inputs = torch.cat([T_ext, X_ext], dim=1)
@@ -4329,7 +4821,7 @@ def fixed_physics_validation_score(
 
             X_int_ext = torch.ones_like(T_int, requires_grad=True) * delta
             C_C_int, C_D_int = model_ext(torch.cat([T_int, X_int_ext], dim=1))
-            J_rxn = k_cat_star * C_B_int * C_C_int
+            J_rxn = active_k * C_B_int * C_C_int
             loss_interface_thin = (
                 torch.mean((flux_scale * (-D_rel_A * C_A_X_int + J_rxn)) ** 2) +
                 torch.mean((flux_scale * (-D_rel_B * C_B_X_int - J_rxn)) ** 2)
@@ -4375,10 +4867,12 @@ def fixed_physics_validation_score(
                 bounds_weight * loss_bounds +
                 thin_interface_weight * loss_interface_thin +
                 ext_interface_weight * loss_interface_ext +
-                100.0 * loss_reversal
+                100.0 * loss_reversal +
+                current_balance_weight * loss_current_balance
             )
             components = {
                 "score": float(score.detach().cpu()),
+                "k_cat": active_k,
                 "pde_thin": float(loss_pde_thin.detach().cpu()),
                 "pde_ext": float(loss_pde_ext.detach().cpu()),
                 "surface": float(loss_surface.detach().cpu()),
@@ -4388,14 +4882,55 @@ def fixed_physics_validation_score(
                 "interface_thin": float(loss_interface_thin.detach().cpu()),
                 "interface_ext": float(loss_interface_ext.detach().cpu()),
                 "reversal": float(loss_reversal.detach().cpu()),
+                "current_balance": float(loss_current_balance.detach().cpu()),
+                "thin_conservation": float(loss_thin_conservation.detach().cpu()),
+                "thin_constitutive": float(loss_thin_constitutive.detach().cpu()),
             }
     finally:
         if hasattr(model_ext, "clear_step_cache"):
             model_ext.clear_step_cache()
+        if k_value is not None:
+            set_model_k_cat(model_thin, model_ext, previous_k)
         model_thin.train(thin_was_training)
         model_ext.train(ext_was_training)
 
     return components
+
+
+def parameterized_physics_validation_score(
+    model_thin,
+    model_ext,
+    device,
+    k_values=KPARAM_ANCHORS,
+    **kwargs,
+):
+    per_k = {}
+    for value in k_values:
+        result = fixed_physics_validation_score(
+            model_thin,
+            model_ext,
+            device,
+            k_value=float(value),
+            **kwargs,
+        )
+        per_k[f"{float(value):g}"] = result
+
+    scores = np.asarray([entry["score"] for entry in per_k.values()], dtype=float)
+    aggregate = 0.5 * float(np.mean(scores)) + 0.5 * float(np.max(scores))
+    component_names = [
+        "pde_thin", "pde_ext", "surface", "farfield", "initial",
+        "bounds", "interface_thin", "interface_ext", "reversal",
+        "current_balance", "thin_conservation", "thin_constitutive",
+    ]
+    result = {
+        "score": aggregate,
+        "score_mean": float(np.mean(scores)),
+        "score_worst": float(np.max(scores)),
+        "per_k": per_k,
+    }
+    for name in component_names:
+        result[name] = float(np.mean([entry[name] for entry in per_k.values()]))
+    return result
 
 
 def run_fdm_posterior_compare(model_thin, model_ext, epoch, arch_name, fdm_pkl,
@@ -4432,15 +4967,7 @@ def run_fdm_posterior_compare(model_thin, model_ext, epoch, arch_name, fdm_pkl,
         "epoch": epoch,
         "model_thin_state_dict": model_thin.state_dict(),
         "model_ext_state_dict": model_ext.state_dict(),
-        "parameters": {
-            "sigma": sigma, "theta_i": theta_i, "theta_switch": theta_switch,
-            "T_sim": T_sim, "delta": delta, "X_ext_max": X_ext_max,
-            "gamma": gamma, "k_cat_star": k_cat_star, "lambda_factor": lambda_factor,
-            "normalize_inputs": USE_NORMALIZED_COORDS,
-            "green_time_grid": getattr(model_ext, "time_grid_points", None),
-            "green_kernel_points": getattr(model_ext, "kernel_points", None),
-            "green_history_grad": getattr(model_ext, "history_grad", None),
-        },
+        "parameters": checkpoint_parameters(model_ext),
     }, eval_checkpoint)
 
     cmd = [
@@ -4448,7 +4975,6 @@ def run_fdm_posterior_compare(model_thin, model_ext, epoch, arch_name, fdm_pkl,
         "--fdm-pkl", fdm_pkl,
         "--arch", arch_name,
         "--gamma", str(gamma),
-        "--k-cat-star", str(k_cat_star),
         "--input-mode", "normalized" if USE_NORMALIZED_COORDS else "legacy",
         "--checkpoint", eval_checkpoint,
         "--n-time", str(n_time),
@@ -4459,6 +4985,8 @@ def run_fdm_posterior_compare(model_thin, model_ext, epoch, arch_name, fdm_pkl,
         "--output-npz", output_npz,
         "--output-figure", output_figure,
     ]
+    if not is_k_parameterized(model_ext=model_ext):
+        cmd.extend(["--k-cat-star", str(k_cat_star)])
     if isinstance(model_ext, ExternalNet_v9_6_MultiscaleGreenGrid):
         cmd.extend([
             "--green-time-grid", str(model_ext.time_grid_points),
@@ -4509,6 +5037,14 @@ def run_fdm_posterior_compare(model_thin, model_ext, epoch, arch_name, fdm_pkl,
     print(f"{'='*60}")
 
 
+def sample_kparam_value(local_epoch, anchor_epochs, anchor_probability=0.5):
+    anchor_probability = float(np.clip(anchor_probability, 0.5, 1.0))
+    if local_epoch < int(anchor_epochs) or np.random.random() < anchor_probability:
+        return float(np.random.choice(KPARAM_ANCHORS, p=(0.25, 0.50, 0.25)))
+    log_k = np.random.uniform(np.log10(KPARAM_MIN), np.log10(KPARAM_MAX))
+    return float(10.0 ** log_k)
+
+
 def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resume=False,
                      early_stop=True, resume_checkpoint=None, resume_best=False,
                      save_every=2000, thin_interface_weight=None, ext_interface_weight=200.0,
@@ -4530,7 +5066,13 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                      early_stop_min_epochs=-1,
                      early_stop_min_relative_improvement=0.005,
                      early_stop_ema_alpha=0.5,
-                     early_stop_validation_points=96):
+                     early_stop_validation_points=96,
+                     kparam_anchor_epochs=1000,
+                     kparam_anchor_probability=0.5,
+                     kparam_freeze_backbone_epochs=1000,
+                     current_balance_weight=None,
+                     current_balance_ramp_epochs=100,
+                     current_balance_samples=256):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     model_thin.to(device)
@@ -4543,7 +5085,38 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             if id(param) not in seen_params:
                 params.append(param)
                 seen_params.add(id(param))
-    optimizer = torch.optim.AdamW(params, lr=learning_rate, weight_decay=1e-4)
+    is_kparam = is_k_parameterized(model_ext=model_ext, model_thin=model_thin)
+    is_conservative_thin = bool(getattr(model_thin, "conservative_thin_current", False))
+    is_mixed_thin = bool(getattr(model_thin, "mixed_flux_thin", False))
+    if current_balance_weight is None:
+        current_balance_weight = 500.0 if is_conservative_thin and not is_mixed_thin else 0.0
+    current_balance_weight = max(0.0, float(current_balance_weight))
+    current_balance_ramp_epochs = max(0, int(current_balance_ramp_epochs))
+    current_balance_samples = max(32, int(current_balance_samples))
+    original_requires_grad = {id(param): param.requires_grad for param in params}
+    adapter_param_ids = {
+        id(param)
+        for param in getattr(model_thin, "k_adapter", nn.Identity()).parameters()
+    }
+    backbone_frozen = False
+    if is_kparam and int(kparam_freeze_backbone_epochs) > 0:
+        for param in params:
+            param.requires_grad_(id(param) in adapter_param_ids)
+        backbone_frozen = True
+    if is_kparam:
+        adapter_params = [param for param in params if id(param) in adapter_param_ids]
+        backbone_params = [param for param in params if id(param) not in adapter_param_ids]
+        if not adapter_params:
+            raise RuntimeError("kparam architecture is missing its conditional adapter")
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": adapter_params, "lr": learning_rate},
+                {"params": backbone_params, "lr": 0.1 * learning_rate},
+            ],
+            weight_decay=1e-4,
+        )
+    else:
+        optimizer = torch.optim.AdamW(params, lr=learning_rate, weight_decay=1e-4)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=n_epochs, eta_min=1e-7)
@@ -4583,7 +5156,9 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         'cint_temporal_smooth': [], 'lr': [], 'nernst_err': [],
         'surface_state': [], 'physics_score': [],
         'physics_validation_score': [], 'physics_validation_ema': [],
-        'physics_validation_epoch': []
+        'physics_validation_epoch': [], 'k_cat': [],
+        'current_balance': [], 'current_balance_weight': [],
+        'thin_conservation': [], 'thin_constitutive': []
     }
 
     best_score = float('inf')
@@ -4601,6 +5176,17 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         0.0, float(early_stop_min_relative_improvement)
     )
     early_stop_validation_points = max(32, int(early_stop_validation_points))
+    kparam_anchor_epochs = max(0, int(kparam_anchor_epochs))
+    kparam_freeze_backbone_epochs = max(0, int(kparam_freeze_backbone_epochs))
+    kparam_anchor_probability = float(np.clip(kparam_anchor_probability, 0.5, 1.0))
+    if is_kparam:
+        model_ext.k_sampling_metadata = {
+            "k_anchor_values": list(KPARAM_ANCHORS),
+            "k_anchor_probabilities": [0.25, 0.50, 0.25],
+            "k_anchor_epochs": kparam_anchor_epochs,
+            "k_anchor_probability_after_stage1": kparam_anchor_probability,
+            "k_freeze_backbone_epochs": kparam_freeze_backbone_epochs,
+        }
     if int(early_stop_min_epochs) < 0:
         if getattr(model_ext, "film_trace_clean_external", False):
             early_stop_min_epochs = max(
@@ -4679,9 +5265,16 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     print(
         "  6b. Parameter-consistent residual scales: "
         f"external={external_residual_scale():.6g}, "
-        f"flux={flux_residual_scale():.6g}, "
-        f"J_ref={characteristic_reaction_flux():.6g}"
+        f"flux={flux_residual_scale(k_cat_value=model_active_k_cat(model_ext=model_ext)):.6g}, "
+        f"J_ref={characteristic_reaction_flux(k_cat_value=model_active_k_cat(model_ext=model_ext)):.6g}"
     )
+    if is_kparam:
+        print(
+            "  6c. k-parameterization: "
+            f"range=[{KPARAM_MIN:g},{KPARAM_MAX:g}], anchors={KPARAM_ANCHORS}, "
+            f"anchor_epochs={kparam_anchor_epochs}, anchor_probability={kparam_anchor_probability:.2f}, "
+            f"freeze_backbone_epochs={kparam_freeze_backbone_epochs}"
+        )
     if fdm_compare_pkl and fdm_compare_every > 0:
         print(f"  7. FDM posterior compare every {fdm_compare_every} epochs: {fdm_compare_pkl}")
     if isinstance(model_ext, ExternalNet_v9_6_MultiscaleGreenGrid):
@@ -4813,6 +5406,18 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 "Dirichlet Green lift; exploratory dynamic, matched-Abel, and "
                 "reversal-jump ablation penalties are disabled."
             )
+        if is_conservative_thin:
+            print(
+                " 18. Thin inventory current: "
+                "J_surface=-J_rxn-d/dt integral(C_B dx); "
+                f"target_weight={current_balance_weight:.1f}, "
+                f"ramp={current_balance_ramp_epochs}, samples={current_balance_samples}, quadrature=16"
+            )
+        if is_mixed_thin:
+            print(
+                " 19. Thin mixed flux: q_B(0)=-J_electrode, q_B(delta)=J_rxn; "
+                "L_thin=||C_B,t+q_B,x||^2+2||q_B+D_B*C_B,x||^2."
+            )
         if getattr(getattr(model_ext, "interface_state", None), "matched_abel_interface", False):
             print(
                 " 17. Matched Abel interface memory: Neumann-to-trace "
@@ -4834,10 +5439,28 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     for epoch in range(start_epoch, start_epoch + n_epochs):
         model_thin.train()
         model_ext.train()
+        local_epoch = epoch - start_epoch
+        kparam_schedule_epoch = epoch if is_kparam else local_epoch
+        if is_kparam:
+            if backbone_frozen and kparam_schedule_epoch >= kparam_freeze_backbone_epochs:
+                for param in params:
+                    param.requires_grad_(original_requires_grad[id(param)])
+                backbone_frozen = False
+                print(
+                    f"[kparam] clean backbone unfrozen at parameterized epoch {kparam_schedule_epoch}",
+                    flush=True,
+                )
+            step_k = sample_kparam_value(
+                kparam_schedule_epoch,
+                anchor_epochs=kparam_anchor_epochs,
+                anchor_probability=kparam_anchor_probability,
+            )
+            set_model_k_cat(model_thin, model_ext, step_k)
+        else:
+            step_k = float(k_cat_star)
         if hasattr(model_ext, "clear_step_cache"):
             model_ext.clear_step_cache()
 
-        local_epoch = epoch - start_epoch
         if hasattr(model_ext, "set_clean_residual_scale"):
             if clean_residual_decay_epochs and clean_residual_decay_epochs > 0:
                 frac = min(max(local_epoch / float(clean_residual_decay_epochs), 0.0), 1.0)
@@ -4875,15 +5498,43 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         inputs_thin = torch.cat([T_thin, X_thin], dim=1)
         C_A, C_B = model_thin(inputs_thin)
 
-        C_A_T = torch.autograd.grad(C_A.sum(), T_thin, create_graph=True)[0]
-        C_A_X = torch.autograd.grad(C_A.sum(), X_thin, create_graph=True)[0]
-        C_A_XX = torch.autograd.grad(C_A_X.sum(), X_thin, create_graph=True)[0]
-
         C_B_T = torch.autograd.grad(C_B.sum(), T_thin, create_graph=True)[0]
         C_B_X = torch.autograd.grad(C_B.sum(), X_thin, create_graph=True)[0]
-        C_B_XX = torch.autograd.grad(C_B_X.sum(), X_thin, create_graph=True)[0]
+        if is_mixed_thin:
+            q_B_thin = model_thin.flux_b(inputs_thin)
+            q_B_X = torch.autograd.grad(q_B_thin.sum(), X_thin, create_graph=True)[0]
+            loss_thin_conservation = torch.mean((C_B_T + q_B_X) ** 2)
+            loss_thin_constitutive = torch.mean((q_B_thin + D_rel_B * C_B_X) ** 2)
+            loss_pde_thin = loss_thin_conservation + 2.0 * loss_thin_constitutive
+        else:
+            C_A_T = torch.autograd.grad(C_A.sum(), T_thin, create_graph=True)[0]
+            C_A_X = torch.autograd.grad(C_A.sum(), X_thin, create_graph=True)[0]
+            C_A_XX = torch.autograd.grad(C_A_X.sum(), X_thin, create_graph=True)[0]
+            C_B_XX = torch.autograd.grad(C_B_X.sum(), X_thin, create_graph=True)[0]
+            loss_pde_thin = (
+                torch.mean((C_A_T - D_rel_A * C_A_XX) ** 2) +
+                torch.mean((C_B_T - D_rel_B * C_B_XX) ** 2)
+            )
+            loss_thin_conservation = torch.zeros((), device=device)
+            loss_thin_constitutive = torch.zeros((), device=device)
 
-        loss_pde_thin = torch.mean((C_A_T - D_rel_A * C_A_XX)**2) +                         torch.mean((C_B_T - D_rel_B * C_B_XX)**2)
+        loss_current_balance = torch.zeros((), device=device)
+        added_epoch = epoch - start_epoch + 1
+        if current_balance_weight > 0.0:
+            T_current = torch.rand(
+                current_balance_samples, 1, device=device
+            ) * T_sim
+            T_current.requires_grad_(True)
+            current = thin_current_components(
+                model_thin,
+                T_current,
+                quadrature_points=16,
+                create_graph=True,
+            )
+            j_ref = characteristic_reaction_flux(gamma, step_k)
+            loss_current_balance = torch.mean(
+                (current["balance_residual"] / max(j_ref, 1e-8)) ** 2
+            )
 
         # 3.2 External PDE
         inputs_ext = torch.cat([T_ext, X_ext], dim=1)
@@ -5011,8 +5662,9 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         C_C_X_int = torch.autograd.grad(C_C_int.sum(), X_int_ext, create_graph=True, retain_graph=True)[0]
         C_D_X_int = torch.autograd.grad(C_D_int.sum(), X_int_ext, create_graph=True, retain_graph=True)[0]
 
-        J_rxn = k_cat_star * C_B_int * C_C_int
-        flux_scale = flux_residual_scale()
+        active_k = model_active_k_cat(model_ext=model_ext, model_thin=model_thin)
+        J_rxn = active_k * C_B_int * C_C_int
+        flux_scale = flux_residual_scale(k_cat_value=active_k)
 
         # 保持 v9.5 的通量符号（经分析正确）
         flux_A_res = flux_scale * (-D_rel_A * C_A_X_int + J_rxn)
@@ -5168,6 +5820,12 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         else:
             surface_weight = min(500.0, 150.0 * np.exp((epoch - start_epoch - 10000) / 1500))
 
+        if current_balance_ramp_epochs > 0:
+            current_ramp = min(1.0, added_epoch / float(current_balance_ramp_epochs))
+        else:
+            current_ramp = 1.0
+        active_current_balance_weight = current_balance_weight * current_ramp
+
         # v9.6: 大幅增加界面权重
         base_weights = {
             'pde_thin': pde_thin_weight,
@@ -5186,6 +5844,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             'phase_temporal_smooth': float(getattr(interface_state, "phase_smooth_weight", 0.0)),
             'cint_reversal_jump': float(getattr(interface_state, "cint_reversal_jump_weight", 0.0)),
             'cint_temporal_smooth': float(getattr(interface_state, "cint_temporal_smooth_weight", 0.0)),
+            'current_balance': active_current_balance_weight,
         }
 
         # 3.7 Total loss
@@ -5205,7 +5864,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             base_weights['static_temporal_smooth'] * loss_static_temporal_smooth +
             base_weights['phase_temporal_smooth'] * loss_phase_temporal_smooth +
             base_weights['cint_reversal_jump'] * loss_cint_reversal_jump +
-            base_weights['cint_temporal_smooth'] * loss_cint_temporal_smooth
+            base_weights['cint_temporal_smooth'] * loss_cint_temporal_smooth +
+            base_weights['current_balance'] * loss_current_balance
         )
         physics_score = (
             pde_thin_weight * loss_pde_thin +
@@ -5223,7 +5883,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             base_weights['static_temporal_smooth'] * loss_static_temporal_smooth +
             base_weights['phase_temporal_smooth'] * loss_phase_temporal_smooth +
             base_weights['cint_reversal_jump'] * loss_cint_reversal_jump +
-            base_weights['cint_temporal_smooth'] * loss_cint_temporal_smooth
+            base_weights['cint_temporal_smooth'] * loss_cint_temporal_smooth +
+            current_balance_weight * loss_current_balance
         )
 
         # ========== 5. Optimization ==========
@@ -5284,6 +5945,11 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         loss_history['nernst_err'].append(nernst_err)
         loss_history['surface_state'].append(loss_surface_state.item())
         loss_history.setdefault('physics_score', []).append(physics_score.item())
+        loss_history.setdefault('k_cat', []).append(active_k)
+        loss_history.setdefault('current_balance', []).append(loss_current_balance.item())
+        loss_history.setdefault('current_balance_weight', []).append(active_current_balance_weight)
+        loss_history.setdefault('thin_conservation', []).append(loss_thin_conservation.item())
+        loss_history.setdefault('thin_constitutive', []).append(loss_thin_constitutive.item())
         interface_state_for_history = getattr(model_ext, "interface_state", None)
         if getattr(interface_state_for_history, "mixed_abel_interface", False):
             loss_history.setdefault('abel_mix_lambda', []).append(
@@ -5293,7 +5959,11 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         # Deterministic physics-only validation.  FDM is deliberately excluded
         # from checkpoint selection and stopping to avoid posterior data leakage.
         if completed_step % early_stop_check_every == 0:
-            validation = fixed_physics_validation_score(
+            validation_fn = (
+                parameterized_physics_validation_score
+                if is_kparam else fixed_physics_validation_score
+            )
+            validation = validation_fn(
                 model_thin,
                 model_ext,
                 device,
@@ -5305,6 +5975,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 thin_interface_weight=thin_interface_weight,
                 ext_interface_weight=ext_interface_weight,
                 n_points=early_stop_validation_points,
+                current_balance_weight=current_balance_weight,
             )
             raw_validation_score = validation["score"]
             if validation_ema is None:
@@ -5318,6 +5989,10 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             loss_history.setdefault('physics_validation_score', []).append(raw_validation_score)
             loss_history.setdefault('physics_validation_ema', []).append(validation_ema)
             loss_history.setdefault('physics_validation_epoch', []).append(epoch + 1)
+            if is_kparam:
+                loss_history.setdefault('physics_validation_per_k', []).append(
+                    {key: value['score'] for key, value in validation['per_k'].items()}
+                )
 
             required_score = best_score * (1.0 - early_stop_min_relative_improvement)
             improved = not np.isfinite(best_score) or validation_ema < required_score
@@ -5391,6 +6066,11 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 phase_msg += f" | abel_mix_lambda={float(interface_state._abel_mix_lambda().detach().cpu()):.6f}"
             if hasattr(model_ext, "clean_residual_scale"):
                 phase_msg += f" | R_smooth_scale={float(model_ext.clean_residual_scale.detach().cpu()):.3f}"
+            if is_kparam:
+                phase_msg += (
+                    f" | k={active_k:.6g}"
+                    f" | J_ref={characteristic_reaction_flux(k_cat_value=active_k):.4g}"
+                )
             print(
                 f"[progress] epoch {epoch + 1}/{start_epoch + n_epochs} "
                 f"({step_count}/{n_epochs}) | loss={total_loss.item():.3e} "
@@ -5402,6 +6082,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 f"static={loss_static_temporal_smooth.item():.2e} "
                 f"phase={loss_phase_temporal_smooth.item():.2e} "
                 f"cint=({loss_cint_reversal_jump.item():.2e},{loss_cint_temporal_smooth.item():.2e}) "
+                f"current={loss_current_balance.item():.2e}@{active_current_balance_weight:.1f} "
+                f"mixed=({loss_thin_conservation.item():.2e},{loss_thin_constitutive.item():.2e}) "
                 f"| {sec_per_epoch:.2f}s/epoch | last {progress_every}={interval_sec:.1f}s "
                 f"| ETA={eta_sec/60.0:.1f}min{gpu_msg}{phase_msg}",
                 flush=True,
@@ -5438,11 +6120,22 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 X_int_test = torch.ones_like(T_int_test) * delta
                 _, C_B_int_test = model_thin(torch.cat([T_int_test, X_int_test], dim=1))
                 C_C_int_test, _ = model_ext(torch.cat([T_int_test, X_int_test], dim=1))
-                J_rxn_test = (k_cat_star * C_B_int_test * C_C_int_test).mean().item()
+                active_k_test = model_active_k_cat(model_ext=model_ext, model_thin=model_thin)
+                J_rxn_test = (active_k_test * C_B_int_test * C_C_int_test).mean().item()
 
             print(f"\nEpoch {epoch:5d} | Total: {total_loss.item():.4e}")
             print(f"  Physics score: {physics_score.item():.4e}")
             print(f"  PDE_thin: {loss_pde_thin.item():.4e} | PDE_ext: {loss_pde_ext.item():.4e}")
+            if is_conservative_thin:
+                print(
+                    f"  Current balance: {loss_current_balance.item():.4e} "
+                    f"(w={active_current_balance_weight:.1f})"
+                )
+            if is_mixed_thin:
+                print(
+                    f"  Thin mixed: conservation={loss_thin_conservation.item():.4e}, "
+                    f"constitutive={loss_thin_constitutive.item():.4e}"
+                )
             print(f"  Surface: {loss_surface.item():.4e} (w={base_weights['surface']:.2f})")
             print(f"  Surface state: {loss_surface_state.item():.4e}")
             print(f"  Bounds: {loss_bounds.item():.4e} (w={base_weights['bounds']:.1f})")
@@ -5520,7 +6213,11 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     # Very short runs may finish before the first scheduled validation check.
     # Still create a physically selected best checkpoint for downstream stages.
     if not np.isfinite(best_score):
-        validation = fixed_physics_validation_score(
+        validation_fn = (
+            parameterized_physics_validation_score
+            if is_kparam else fixed_physics_validation_score
+        )
+        validation = validation_fn(
             model_thin,
             model_ext,
             device,
@@ -5532,6 +6229,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             thin_interface_weight=thin_interface_weight,
             ext_interface_weight=ext_interface_weight,
             n_points=early_stop_validation_points,
+            current_balance_weight=current_balance_weight,
         )
         best_score = validation["score"]
         best_epoch = epoch + 1
@@ -5539,6 +6237,10 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         loss_history.setdefault('physics_validation_score', []).append(best_score)
         loss_history.setdefault('physics_validation_ema', []).append(best_score)
         loss_history.setdefault('physics_validation_epoch', []).append(best_epoch)
+        if is_kparam:
+            loss_history.setdefault('physics_validation_per_k', []).append(
+                {key: value['score'] for key, value in validation['per_k'].items()}
+            )
         save_model_v96(
             model_thin,
             model_ext,
@@ -5667,10 +6369,6 @@ def predict_and_visualize_v9_6(model_thin, model_ext, loss_history, gamma, n_cv=
     ax4.axhline(J_thin_pure, color='r', linestyle='--', linewidth=2, 
                 alpha=0.7, label=f'Pure thin-layer: {J_thin_pure:.3f}')
 
-    # FDM 参考
-    ax4.axhline(-6.0628, color='g', linestyle=':', linewidth=2, 
-                alpha=0.7, label=f'FDM ref: -6.063')
-
     peak_idx = np.argmin(J_total)
     ax4.scatter([theta_values[peak_idx]], [J_total[peak_idx]], 
                 color='red', s=150, zorder=5, marker='*')
@@ -5787,7 +6485,6 @@ def predict_and_visualize_v9_6(model_thin, model_ext, loss_history, gamma, n_cv=
     results_text += f"Peak current (catalytic): {J_peak:.4f}\n"
     results_text += f"Peak current (pure): {J_thin_pure:.4f}\n"
     results_text += f"Enhancement factor: {enhancement:.2f}x\n"
-    results_text += f"FDM reference: 17.32x\n"
     results_text += f"Peak potential: {theta_values[peak_idx]:.2f}\n"
     results_text += f"\nPhysics validation:\n"
     results_text += f"  Interface flux: {phys_err:.2e}\n"
@@ -5817,7 +6514,6 @@ def predict_and_visualize_v9_6(model_thin, model_ext, loss_history, gamma, n_cv=
     print(f"Peak current (catalytic):     {J_peak:.6f}")
     print(f"Peak current (pure thin-layer): {J_thin_pure:.6f}")
     print(f"Catalytic enhancement factor:   {enhancement:.2f}x")
-    print(f"FDM reference enhancement:      17.32x")
     print(f"Peak potential:                 {theta_values[peak_idx]:.4f}")
     print(f"Interface flux error:           {phys_err:.2e}")
     print(f"Final Nernst error:             {final_nernst_err:.2e}")
@@ -5979,6 +6675,8 @@ if __name__ == "__main__":
                         help="Resume training from the best checkpoint.")
     parser.add_argument("--resume-checkpoint", default=None,
                         help="Explicit checkpoint path to resume training from.")
+    parser.add_argument("--warm-start-checkpoint", default=None,
+                        help="Load model weights only; required when seeding kparam from fixed k=1 clean.")
     parser.add_argument("--checkpoint-dir", default=None,
                         help="Directory for current/best checkpoints, e.g. a Google Drive folder on Colab.")
     parser.add_argument("--save-every", type=int, default=2000,
@@ -5992,7 +6690,7 @@ if __name__ == "__main__":
                         help="Fixed bulk C concentration ratio for this run.")
     parser.add_argument("--k-cat-star", type=float, default=REFERENCE_K_CAT_STAR,
                         help="Fixed catalytic reaction constant for this run.")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_kparam", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256,
                         help="Global history time-grid size for multiscale_green_grid.")
     parser.add_argument("--green-kernel-points", type=int, default=32,
@@ -6045,6 +6743,12 @@ if __name__ == "__main__":
                         help="Initial R_smooth scaffold scale for multiscale_film_tracegreen_clean.")
     parser.add_argument("--clean-residual-decay-epochs", type=int, default=0,
                         help="Epochs over which the clean R_smooth scaffold decays linearly to zero.")
+    parser.add_argument("--current-balance-weight", type=float, default=None,
+                        help="Final thin inventory-current consistency weight; architecture-aware by default.")
+    parser.add_argument("--current-balance-ramp-epochs", type=int, default=100,
+                        help="Linear ramp length for the inventory-current consistency weight.")
+    parser.add_argument("--current-balance-samples", type=int, default=256,
+                        help="Random time samples used by the thin inventory-current loss each epoch.")
     parser.add_argument("--abort-on-nan", action="store_true",
                         help="Abort before optimizer.step if loss or gradient norm is non-finite.")
     parser.add_argument("--reset-best-score", action="store_true",
@@ -6065,6 +6769,12 @@ if __name__ == "__main__":
                         help="EMA alpha for deterministic physics validation scores.")
     parser.add_argument("--early-stop-validation-points", type=int, default=96,
                         help="Deterministic validation points per physics component.")
+    parser.add_argument("--kparam-anchor-epochs", type=int, default=1000,
+                        help="Added epochs using only k={0.1,1,10} before continuous log-k sampling.")
+    parser.add_argument("--kparam-anchor-probability", type=float, default=0.5,
+                        help="Anchor sampling probability after the anchor-only stage; minimum 0.5.")
+    parser.add_argument("--kparam-freeze-backbone-epochs", type=int, default=1000,
+                        help="Added epochs that train only the zero-initialized k adapter.")
     parser.add_argument("--smoke-test", action="store_true",
                         help="Run a tiny forward/gradient/backward sanity check and exit.")
     args = parser.parse_args()
@@ -6094,6 +6804,8 @@ if __name__ == "__main__":
     )
     model_thin = model_thin.to(device)
     model_ext = model_ext.to(device)
+    if is_k_parameterized(model_ext=model_ext):
+        set_model_k_cat(model_thin, model_ext, args.k_cat_star)
 
     total_params = (sum(p.numel() for p in model_thin.parameters()) + 
                    sum(p.numel() for p in model_ext.parameters()))
@@ -6137,7 +6849,13 @@ if __name__ == "__main__":
     start_epoch = 0
     loaded_from = ""
 
-    if args.arch != "legacy":
+    if args.warm_start_checkpoint and (args.resume or args.resume_best or args.resume_checkpoint):
+        raise ValueError("--warm-start-checkpoint cannot be combined with resume options")
+
+    if args.warm_start_checkpoint:
+        warm_start_model_v96(model_thin, model_ext, args.warm_start_checkpoint)
+        loaded_from = f"warm-start {args.warm_start_checkpoint}"
+    elif args.arch != "legacy":
         print(f"\nArchitecture '{args.arch}' starts from scratch.")
         print("Legacy checkpoints are not loaded into the multiscale network.")
     elif os.path.exists(MODEL_V95_BEST_PATH) and USE_NORMALIZED_COORDS:
@@ -6211,6 +6929,12 @@ if __name__ == "__main__":
         early_stop_min_relative_improvement=args.early_stop_min_relative_improvement,
         early_stop_ema_alpha=args.early_stop_ema_alpha,
         early_stop_validation_points=args.early_stop_validation_points,
+        kparam_anchor_epochs=args.kparam_anchor_epochs,
+        kparam_anchor_probability=args.kparam_anchor_probability,
+        kparam_freeze_backbone_epochs=args.kparam_freeze_backbone_epochs,
+        current_balance_weight=args.current_balance_weight,
+        current_balance_ramp_epochs=args.current_balance_ramp_epochs,
+        current_balance_samples=args.current_balance_samples,
     )
 
     # 可视化

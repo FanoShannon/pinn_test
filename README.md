@@ -562,6 +562,31 @@ Parameter-scale consistency in this branch:
 - Clean Stage 2 maps the Film-Abel prior into `(0,gamma)` with a differentiable
   softplus-ratio map instead of a hard clamp.
 
+### k_cat parameter generalization
+
+`multiscale_film_tracegreen_kparam` generalizes only `k_cat` over `[0.1,10]`;
+`gamma=10` and `delta=0.035` remain fixed.  One scalar `k_cat` is sampled per
+optimizer step, so the Film-Abel history and every collocation point in that
+step share one physical problem.  The first stage samples the anchors
+`{0.1,1,10}` with probabilities `{0.25,0.50,0.25}`.  The second stage mixes at
+least 50% anchor samples with log-uniform continuous samples.
+
+The new path must warm-start from a parameter-scale-consistency clean `k=1`
+checkpoint; a fixed checkpoint cannot be resumed as if it already contained a
+parameterized optimizer state:
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!WARM_START_CKPT=/content/gdrive/MyDrive/pinn_v96/path/to/clean_k1_best.pth \
+  bash run_colab_film_tracegreen_kparam_256x64.sh
+```
+
+Multi-case FDM comparison remains posterior-only.  The Colab script evaluates
+available anchor files plus the log-midpoint holdouts `0.316` and `3.162`, then
+writes per-case metrics and `k_parameter_summary.json` with mean and worst-case
+dimensionless errors.  A zero-shot physics audit can use the same comparison
+driver with `--zero-shot-fixed-reference` and a fixed clean checkpoint.
+
 Physics-only early stopping is enabled by default.  It uses a fixed deterministic
 collocation set and never reads FDM data.  Every 100 epochs it evaluates the
 scale-consistent PDE, surface, initial, far-field, interface, bounds, and reversal
@@ -667,3 +692,36 @@ The current best interpretation is:
    `C_C_int -> C_C(x,t)` propagation with learnable full-field Green diffusion
    length, multi-scale Green kernels, or stronger coordinate-safe spatial
    correction modes.
+
+## Conservative Thin Current and Mixed Flux
+
+For the `gamma=1, k=1` clean checkpoint, the concentration field implies an
+accurate CV through the thin-film inventory identity
+
+```text
+J_conservative = -J_rxn - d/dt integral_0^delta C_B(x,t) dx
+```
+
+even though the raw surface-gradient current is inaccurate.  The two new
+architectures isolate and repair that derivative inconsistency without using
+FDM in the training loss:
+
+- `multiscale_film_tracegreen_clean_conservative`: unchanged concentration
+  forward plus a ramped inventory-current consistency loss.
+- `multiscale_film_tracegreen_clean_mixedflux`: explicit `q_B` with hard surface
+  and interface flux states and first-order conservation/constitutive losses.
+
+Run both Colab stages from the clean physics-best checkpoint:
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!CLEAN_BEST=/content/gdrive/MyDrive/pinn_v96/path/to/pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_best.pth \
+  GAMMA=1.0 K_CAT_STAR=1.0 \
+  FDM_PKL=/content/gdrive/MyDrive/FDM_parameter_scale_0711/gamma1_k1_v42_thin_layer_catalytic_v42.pkl \
+  bash run_colab_conservative_mixedflux_256x64.sh
+```
+
+FDM is read only after training.  Model selection and early stopping use fixed
+physics validation.  Posterior comparison now reports `CV_J_surface`,
+`CV_J_conservative`, and `CV_J_surface_vs_conservative`; the legacy `CV_J`
+field remains the surface-gradient metric.
