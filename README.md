@@ -728,3 +728,38 @@ field remains the surface-gradient metric.
 
 Set `SKIP_MIXED=1` to stop after the conservative stage and run only the
 recommended current-correction model.
+
+## Inventory-Constrained Hermite Lift
+
+`multiscale_film_tracegreen_conservative_lift` is a zero-training hard
+conservation transform for the clean Film-TraceGreen checkpoint.  It adds
+
+```text
+C_B = C_B_base + delta * a(t) * h10(x/delta)
+h10(s) = s * (1-s)^2
+```
+
+and solves the causal inventory equation
+
+```text
+(delta^2 / 12) * da/dt + D_A * a
+    = J_conservative_base - J_surface_base.
+```
+
+The lift preserves both endpoint concentrations and the interface derivative.
+It changes only the electrode-side derivative and therefore makes the surface
+current satisfy the thin-film inventory identity without FDM supervision.
+
+Run the posterior test directly from the clean physics-best checkpoint:
+
+```bash
+CLEAN_BEST=/absolute/path/to/pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_best.pth \
+WORK_DIR=/content/pinn_v96_inventory_lift_code \
+FDM_PKL=/content/gdrive/MyDrive/FDM_parameter_scale_0711/gamma1_k1_v42_thin_layer_catalytic_v42.pkl \
+bash /content/pinn_v96_inventory_lift_code/run_colab_inventory_hermite_lift_eval.sh
+```
+
+FDM is used only by the posterior comparison.  A local zero-training check at
+`gamma=1`, `k=1`, and a 1024-point causal lift grid produced surface-current
+RMSE `3.095e-3`, R2 `0.99991`, and surface-versus-conservative RMSE
+`3.82e-5`.

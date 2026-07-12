@@ -27,6 +27,7 @@ def build_models(
     green_time_grid=256,
     green_kernel_points=32,
     green_history_grad=True,
+    lift_time_grid=1024,
 ):
     if arch == "legacy":
         model_thin = pinn.ThinLayerNet_v9_6(normalize_inputs=normalize_inputs)
@@ -416,21 +417,26 @@ def build_models(
     elif arch in {
         "multiscale_film_tracegreen_clean_conservative",
         "multiscale_film_tracegreen_clean_mixedflux",
+        "multiscale_film_tracegreen_conservative_lift",
     }:
         interface_state = pinn.InterfaceStateNet_v9_6_FilmTraceClean(
             normalize_inputs=normalize_inputs,
             time_grid_points=green_time_grid,
             kernel_points=green_kernel_points,
         )
-        thin_class = (
-            pinn.ThinLayerNet_v9_6_MultiscaleHermiteMixedFlux
-            if arch.endswith("mixedflux")
-            else pinn.ThinLayerNet_v9_6_MultiscaleHermiteConservative
-        )
-        model_thin = thin_class(
-            interface_state=interface_state,
-            normalize_inputs=normalize_inputs,
-        )
+        if arch.endswith("mixedflux"):
+            thin_class = pinn.ThinLayerNet_v9_6_MultiscaleHermiteMixedFlux
+        elif arch.endswith("conservative_lift"):
+            thin_class = pinn.ThinLayerNet_v9_6_InventoryHermiteLift
+        else:
+            thin_class = pinn.ThinLayerNet_v9_6_MultiscaleHermiteConservative
+        thin_kwargs = {
+            "interface_state": interface_state,
+            "normalize_inputs": normalize_inputs,
+        }
+        if arch.endswith("conservative_lift"):
+            thin_kwargs["lift_time_grid_points"] = lift_time_grid
+        model_thin = thin_class(**thin_kwargs)
         model_ext = pinn.ExternalNet_v9_6_FilmTraceGreenClean(
             pinn.gamma,
             interface_state=interface_state,
@@ -678,6 +684,7 @@ def compare(args):
         green_time_grid=args.green_time_grid,
         green_kernel_points=args.green_kernel_points,
         green_history_grad=not args.green_detach_history,
+        lift_time_grid=args.lift_time_grid,
     )
     if pinn.is_k_parameterized(model_ext=model_ext):
         pinn.set_model_k_cat(model_thin, model_ext, pinn.k_cat_star)
@@ -1030,9 +1037,10 @@ def main():
                         help="Fixed k_cat*. Defaults to checkpoint metadata, then FDM metadata.")
     parser.add_argument("--zero-shot-fixed-reference", action="store_true",
                         help="Allow a fixed k=1 clean checkpoint to seed kparam evaluation without resume semantics.")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_kparam", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_conservative_lift", "multiscale_film_tracegreen_kparam", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256)
     parser.add_argument("--green-kernel-points", type=int, default=32)
+    parser.add_argument("--lift-time-grid", type=int, default=1024)
     parser.add_argument("--green-detach-history", action="store_true")
     parser.add_argument("--input-mode", choices=["legacy", "normalized"], default="legacy")
     parser.add_argument("--n-time", type=int, default=160)

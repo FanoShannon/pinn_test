@@ -243,6 +243,8 @@ MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_CONSERVATIVE_PATH = './pinn_thin_laye
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_CONSERVATIVE_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_conservative_best.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_MIXEDFLUX_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_mixedflux.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_MIXEDFLUX_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_mixedflux_best.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CONSERVATIVE_LIFT_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_conservative_lift.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CONSERVATIVE_LIFT_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_conservative_lift_best.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_kparam.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_kparam_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema.pth'
@@ -337,6 +339,9 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     elif arch == "multiscale_film_tracegreen_clean_mixedflux":
         current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_MIXEDFLUX_PATH
         best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_MIXEDFLUX_BEST_PATH
+    elif arch == "multiscale_film_tracegreen_conservative_lift":
+        current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CONSERVATIVE_LIFT_PATH
+        best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CONSERVATIVE_LIFT_BEST_PATH
     elif arch == "multiscale_film_tracegreen_kparam":
         current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_PATH
         best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_BEST_PATH
@@ -1974,6 +1979,178 @@ class ThinLayerNet_v9_6_MultiscaleHermiteConservative(ThinLayerNet_v9_6_Multisca
     """Checkpoint-compatible Hermite thin layer with inventory supervision."""
 
     conservative_thin_current = True
+
+
+class ThinLayerNet_v9_6_InventoryHermiteLift(
+    ThinLayerNet_v9_6_MultiscaleHermiteConservative
+):
+    """Causal Hermite lift that enforces the thin-film inventory identity.
+
+    Starting from the checkpoint-compatible clean field C_B^0, the lift adds
+    ``delta * a(t) * h10(x/delta)``.  It leaves both endpoint values and the
+    right endpoint derivative unchanged while correcting the electrode slope.
+    The amplitude solves
+
+        (delta**2 / 12) * da/dt + D_A * a = J_cons^0 - J_surface^0,
+
+    so the corrected surface current and corrected inventory current agree by
+    construction, up to the causal time-grid approximation.
+    """
+
+    inventory_hermite_lift = True
+
+    def __init__(
+        self,
+        *args,
+        lift_time_grid_points=1024,
+        lift_quadrature_points=16,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.lift_time_grid_points = max(64, int(lift_time_grid_points))
+        self.lift_quadrature_points = max(4, int(lift_quadrature_points))
+        self._lift_eval_cache = None
+
+    @property
+    def lift_inventory_coefficient(self):
+        return float(delta ** 2 / 12.0)
+
+    def clear_lift_cache(self):
+        self._lift_eval_cache = None
+
+    def train(self, mode=True):
+        if mode:
+            self.clear_lift_cache()
+        return super().train(mode)
+
+    def base_forward(self, x_input):
+        return super().forward(x_input)
+
+    def base_surface_current_state(self, T_raw):
+        return super().surface_current_state(T_raw)
+
+    @staticmethod
+    def _causal_etd_step(a0, source0, source_slope, h, tau):
+        decay_rate = D_rel_A / tau
+        one_minus_decay = -torch.expm1(-decay_rate * h)
+        decay = 1.0 - one_minus_decay
+        return (
+            decay * a0 +
+            (one_minus_decay / D_rel_A) * source0 +
+            (source_slope / D_rel_A) *
+            (h - one_minus_decay / decay_rate)
+        )
+
+    def _compute_lift_grid(self, device, dtype, create_graph=False):
+        if not create_graph and self._lift_eval_cache is not None:
+            cache = self._lift_eval_cache
+            if cache[0].device == device and cache[0].dtype == dtype:
+                return cache
+
+        with torch.enable_grad():
+            T_grid = torch.linspace(
+                0.0,
+                float(T_sim),
+                self.lift_time_grid_points,
+                device=device,
+                dtype=dtype,
+            ).reshape(-1, 1)
+            T_grid.requires_grad_(True)
+
+            nodes_np, weights_np = np.polynomial.legendre.leggauss(
+                self.lift_quadrature_points
+            )
+            nodes = torch.as_tensor(nodes_np, device=device, dtype=dtype)
+            weights = torch.as_tensor(weights_np, device=device, dtype=dtype)
+            X_quad = 0.5 * delta * (nodes + 1.0)
+            T_quad = T_grid.expand(-1, self.lift_quadrature_points)
+            X_quad_full = X_quad.reshape(1, -1).expand(T_grid.shape[0], -1)
+            inputs = torch.stack(
+                [T_quad.reshape(-1), X_quad_full.reshape(-1)], dim=1
+            )
+            _, C_B_base = self.base_forward(inputs)
+            C_B_base = C_B_base.reshape(
+                T_grid.shape[0], self.lift_quadrature_points
+            )
+            M_base = 0.5 * delta * torch.sum(
+                C_B_base * weights.reshape(1, -1), dim=1, keepdim=True
+            )
+            dM_base_dt = torch.autograd.grad(
+                M_base.sum(),
+                T_grid,
+                create_graph=create_graph,
+                retain_graph=create_graph,
+            )[0]
+
+            state = self.interface_state(T_grid)
+            J_surface_base = self.base_surface_current_state(T_grid)
+            J_conservative_base = -state["J_rxn"] - dM_base_dt
+            source = J_conservative_base - J_surface_base
+
+            dt = float(T_sim) / float(self.lift_time_grid_points - 1)
+            source_slope = torch.cat([
+                torch.zeros_like(source[:1]),
+                (source[1:] - source[:-1]) / dt,
+            ], dim=0)
+            tau = self.lift_inventory_coefficient
+            h_step = torch.as_tensor(dt, device=device, dtype=dtype)
+            amplitudes = [torch.zeros_like(source[0])]
+            for index in range(self.lift_time_grid_points - 1):
+                amplitudes.append(self._causal_etd_step(
+                    amplitudes[-1],
+                    source[index],
+                    source_slope[index],
+                    h_step,
+                    tau,
+                ))
+            amplitude_grid = torch.stack(amplitudes, dim=0).reshape(-1, 1)
+
+        result = (T_grid, source, source_slope, amplitude_grid)
+        if not create_graph:
+            result = tuple(value.detach() for value in result)
+            self._lift_eval_cache = result
+        return result
+
+    def lift_amplitude(self, T_raw):
+        create_graph = bool(self.training and torch.is_grad_enabled())
+        T_grid, source, source_slope, amplitude_grid = self._compute_lift_grid(
+            T_raw.device,
+            T_raw.dtype,
+            create_graph=create_graph,
+        )
+        dt = float(T_sim) / float(self.lift_time_grid_points - 1)
+        T_eval = torch.clamp(T_raw, 0.0, float(T_sim))
+        index = torch.floor(T_eval / dt).to(torch.long)
+        index = torch.clamp(index, 0, self.lift_time_grid_points - 1)
+        T_left = index.to(T_raw.dtype) * dt
+        h = T_eval - T_left
+        a0 = amplitude_grid[index.reshape(-1)].reshape_as(T_raw)
+        source0 = source[index.reshape(-1)].reshape_as(T_raw)
+        slope0 = source_slope[index.reshape(-1)].reshape_as(T_raw)
+        return self._causal_etd_step(
+            a0,
+            source0,
+            slope0,
+            h,
+            self.lift_inventory_coefficient,
+        )
+
+    def surface_current_state(self, T_raw):
+        return (
+            self.base_surface_current_state(T_raw) +
+            D_rel_A * self.lift_amplitude(T_raw)
+        )
+
+    def forward(self, x_input):
+        T_raw = x_input[:, 0:1]
+        X_raw = x_input[:, 1:2]
+        C_A_base, C_B_base = self.base_forward(x_input)
+        s = torch.clamp(X_raw / delta, 0.0, 1.0)
+        _, h10, _, _ = hermite_cubic_basis(s)
+        correction = delta * self.lift_amplitude(T_raw) * h10
+        C_B = C_B_base + correction
+        C_A = C_A_base - correction
+        return C_A, C_B
 
 
 class ThinLayerNet_v9_6_MultiscaleHermiteMixedFlux(
@@ -3817,6 +3994,7 @@ def create_models_v96(
     green_kernel_points=32,
     green_history_grad=True,
     green_cache_history=True,
+    lift_time_grid=1024,
 ):
     if arch == "legacy":
         return (
@@ -4170,22 +4348,27 @@ def create_models_v96(
     if arch in {
         "multiscale_film_tracegreen_clean_conservative",
         "multiscale_film_tracegreen_clean_mixedflux",
+        "multiscale_film_tracegreen_conservative_lift",
     }:
         interface_state = InterfaceStateNet_v9_6_FilmTraceClean(
             normalize_inputs=normalize_inputs,
             time_grid_points=green_time_grid,
             kernel_points=green_kernel_points,
         )
-        thin_class = (
-            ThinLayerNet_v9_6_MultiscaleHermiteMixedFlux
-            if arch.endswith("mixedflux")
-            else ThinLayerNet_v9_6_MultiscaleHermiteConservative
-        )
+        if arch.endswith("mixedflux"):
+            thin_class = ThinLayerNet_v9_6_MultiscaleHermiteMixedFlux
+        elif arch.endswith("conservative_lift"):
+            thin_class = ThinLayerNet_v9_6_InventoryHermiteLift
+        else:
+            thin_class = ThinLayerNet_v9_6_MultiscaleHermiteConservative
+        thin_kwargs = {
+            "interface_state": interface_state,
+            "normalize_inputs": normalize_inputs,
+        }
+        if arch.endswith("conservative_lift"):
+            thin_kwargs["lift_time_grid_points"] = lift_time_grid
         return (
-            thin_class(
-                interface_state=interface_state,
-                normalize_inputs=normalize_inputs,
-            ),
+            thin_class(**thin_kwargs),
             ExternalNet_v9_6_FilmTraceGreenClean(
                 gamma,
                 interface_state=interface_state,
@@ -5099,8 +5282,13 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     is_kparam = is_k_parameterized(model_ext=model_ext, model_thin=model_thin)
     is_conservative_thin = bool(getattr(model_thin, "conservative_thin_current", False))
     is_mixed_thin = bool(getattr(model_thin, "mixed_flux_thin", False))
+    is_inventory_lift = bool(getattr(model_thin, "inventory_hermite_lift", False))
     if current_balance_weight is None:
-        current_balance_weight = 500.0 if is_conservative_thin and not is_mixed_thin else 0.0
+        current_balance_weight = (
+            500.0
+            if is_conservative_thin and not is_mixed_thin and not is_inventory_lift
+            else 0.0
+        )
     current_balance_weight = max(0.0, float(current_balance_weight))
     current_balance_ramp_epochs = max(0, int(current_balance_ramp_epochs))
     current_balance_samples = max(32, int(current_balance_samples))
@@ -6704,11 +6892,13 @@ if __name__ == "__main__":
                         help="Fixed bulk C concentration ratio for this run.")
     parser.add_argument("--k-cat-star", type=float, default=REFERENCE_K_CAT_STAR,
                         help="Fixed catalytic reaction constant for this run.")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_kparam", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_conservative_lift", "multiscale_film_tracegreen_kparam", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256,
                         help="Global history time-grid size for multiscale_green_grid.")
     parser.add_argument("--green-kernel-points", type=int, default=32,
                         help="Green convolution quadrature points for multiscale_green_grid.")
+    parser.add_argument("--lift-time-grid", type=int, default=1024,
+                        help="Causal time-grid points for the inventory Hermite lift.")
     parser.add_argument("--green-detach-history", action="store_true",
                         help="Disable history-gradient backprop in multiscale_green_grid for a cheaper ablation.")
     parser.add_argument("--green-no-step-cache", action="store_true",
@@ -6815,6 +7005,7 @@ if __name__ == "__main__":
         green_kernel_points=args.green_kernel_points,
         green_history_grad=not args.green_detach_history,
         green_cache_history=not args.green_no_step_cache,
+        lift_time_grid=args.lift_time_grid,
     )
     model_thin = model_thin.to(device)
     model_ext = model_ext.to(device)

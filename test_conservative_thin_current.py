@@ -16,6 +16,7 @@ class ConservativeThinCurrentTests(unittest.TestCase):
             green_time_grid=16,
             green_kernel_points=8,
             green_cache_history=False,
+            lift_time_grid=64,
         )
 
     def test_conservative_warm_start_preserves_concentration(self):
@@ -108,6 +109,63 @@ class ConservativeThinCurrentTests(unittest.TestCase):
             parameter.grad is not None and torch.isfinite(parameter.grad).all()
             for parameter in mixed_thin.parameters()
         ))
+
+    def test_inventory_lift_is_checkpoint_compatible(self):
+        clean_thin, clean_ext = self._models("multiscale_film_tracegreen_clean")
+        lift_thin, lift_ext = self._models(
+            "multiscale_film_tracegreen_conservative_lift"
+        )
+        lift_thin.load_state_dict(clean_thin.state_dict(), strict=True)
+        lift_ext.load_state_dict(clean_ext.state_dict(), strict=True)
+        self.assertEqual(set(clean_thin.state_dict()), set(lift_thin.state_dict()))
+        self.assertAlmostEqual(
+            lift_thin.lift_inventory_coefficient,
+            pinn.delta ** 2 / 12.0,
+            places=14,
+        )
+
+    def test_inventory_lift_etd_step_satisfies_ode(self):
+        model_thin, _ = self._models(
+            "multiscale_film_tracegreen_conservative_lift"
+        )
+        tau = model_thin.lift_inventory_coefficient
+        h = torch.tensor([[0.0013]], requires_grad=True)
+        a0 = torch.tensor([[0.17]])
+        source0 = torch.tensor([[-0.23]])
+        source_slope = torch.tensor([[1.7]])
+        amplitude = model_thin._causal_etd_step(
+            a0, source0, source_slope, h, tau
+        )
+        derivative = torch.autograd.grad(amplitude.sum(), h)[0]
+        residual = (
+            tau * derivative + pinn.D_rel_A * amplitude -
+            (source0 + source_slope * h)
+        )
+        torch.testing.assert_close(
+            residual, torch.zeros_like(residual), rtol=1e-5, atol=1e-7
+        )
+
+    def test_inventory_lift_preserves_endpoint_values_and_right_slope(self):
+        model_thin, _ = self._models(
+            "multiscale_film_tracegreen_conservative_lift"
+        )
+        model_thin.eval()
+        t = torch.tensor([[0.2], [0.4], [0.7], [0.9]])
+        for x_value in (0.0, pinn.delta):
+            x = torch.full_like(t, x_value)
+            inputs = torch.cat([t, x], dim=1)
+            with torch.no_grad():
+                base = torch.cat(model_thin.base_forward(inputs), dim=1)
+                lifted = torch.cat(model_thin(inputs), dim=1)
+            torch.testing.assert_close(base, lifted, rtol=0.0, atol=2e-7)
+
+        x_base = torch.full_like(t, pinn.delta, requires_grad=True)
+        _, c_b_base = model_thin.base_forward(torch.cat([t, x_base], dim=1))
+        slope_base = torch.autograd.grad(c_b_base.sum(), x_base)[0]
+        x_lift = torch.full_like(t, pinn.delta, requires_grad=True)
+        _, c_b_lift = model_thin(torch.cat([t, x_lift], dim=1))
+        slope_lift = torch.autograd.grad(c_b_lift.sum(), x_lift)[0]
+        torch.testing.assert_close(slope_base, slope_lift, rtol=1e-5, atol=1e-6)
 
 
 if __name__ == "__main__":
