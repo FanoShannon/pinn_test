@@ -777,13 +777,19 @@ Stage 2: multiscale_film_tracegreen_clean
          Learn the Film-Abel interface state and TraceGreen external field.
 
 Stage 3: multiscale_film_tracegreen_conservative_lift
-         Apply the causal Hermite inventory lift and fine-tune the thin PDE.
+         Apply the causal Hermite inventory lift with zero optimizer updates.
 ```
 
-Stage 3 preserves the Stage 2 checkpoint as a separate posterior baseline.
-It does not use FDM in its loss, its early stopping, or its checkpoint choice.
-This separation avoids introducing the Film-Abel/TraceGreen transition and the
-surface-current lift in the same optimizer transition.
+The Stage 3 lift has no new trainable parameters.  The gamma=10 ablation showed
+that zero-training lift is already as accurate or slightly better than 300
+epochs of fine-tuning: the key surface-current RMSE was `0.02198` without
+fine-tuning and `0.02207` after fine-tuning.  The default script therefore
+keeps Stage 2 as the trainable endpoint and evaluates the lift on that
+checkpoint.  Set `TRAIN_LIFT=1` only for a deliberate training ablation.
+
+Stage 3 does not use FDM in its loss, early stopping, or checkpoint choice.
+This separation avoids changing the already accurate clean concentration field
+just to reduce the pointwise PDE residual of the inventory correction mode.
 
 Run one fixed-parameter experiment per gamma.  Do not reuse a gamma=10
 checkpoint for gamma=100.
@@ -825,5 +831,5 @@ this high-flux case so the causal lift resolves faster inventory transients.
 ```
 
 The script checks the FDM `gamma` and `k_cat` metadata before starting.  It
-writes Stage 1, Stage 2, Stage 3, and posterior direct-comparison artifacts
-into the selected `RUN_ROOT`.
+writes Stage 1, Stage 2, zero-training Stage 3, and posterior
+direct-comparison artifacts into the selected `RUN_ROOT`.

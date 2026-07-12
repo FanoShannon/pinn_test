@@ -6,7 +6,8 @@ set -euo pipefail
 #
 # Stage 1: dynamic Green warm-up learns a stable concentration solution.
 # Stage 2: Film-TraceGreen clean learns the causal interface/external structure.
-# Stage 3: Inventory-Hermite lift repairs the thin-film surface-current identity.
+# Stage 3: Inventory-Hermite lift is applied as a zero-training posterior
+# transform.  Optional Stage 3 fine-tuning is retained only as an ablation.
 #
 # FDM is never used in a training loss, early stopping, or checkpoint selection.
 # When FDM_PKL is supplied it is used only for posterior reports.
@@ -46,6 +47,7 @@ SKIP_STAGE2="${SKIP_STAGE2:-0}"
 STAGE2_RESUME_CKPT="${STAGE2_RESUME_CKPT:-}"
 
 STAGE3_ARCH="multiscale_film_tracegreen_conservative_lift"
+TRAIN_LIFT="${TRAIN_LIFT:-0}"
 STAGE3_EPOCHS="${STAGE3_EPOCHS:-300}"
 STAGE3_LR="${STAGE3_LR:-1e-6}"
 STAGE3_MIN_EPOCHS="${STAGE3_MIN_EPOCHS:-100}"
@@ -192,7 +194,7 @@ check_fdm_reference
 log "=================================================="
 log "Conservative-lift three-stage fixed-parameter run"
 log "gamma=$GAMMA, k_cat_star=$K_CAT_STAR, green=$GREEN_TIME_GRID/$GREEN_KERNEL_POINTS, lift_grid=$LIFT_TIME_GRID"
-log "Stage1=$STAGE1_ARCH; Stage2=$STAGE2_ARCH; Stage3=$STAGE3_ARCH"
+log "Stage1=$STAGE1_ARCH; Stage2=$STAGE2_ARCH; Stage3=$STAGE3_ARCH (train_lift=$TRAIN_LIFT)"
 log "FDM is posterior-only: ${FDM_PKL:-not supplied}"
 log "=================================================="
 
@@ -230,17 +232,23 @@ fi
 
 STAGE3_CURRENT="$STAGE3_DIR/checkpoints/pinn_thin_layer_catalytic_v9_6_${STAGE3_ARCH}.pth"
 STAGE3_BEST="$STAGE3_DIR/checkpoints/pinn_thin_layer_catalytic_v9_6_${STAGE3_ARCH}_best.pth"
-if [[ "$SKIP_STAGE3" != "1" ]]; then
+if [[ "$TRAIN_LIFT" == "1" && "$SKIP_STAGE3" != "1" ]]; then
+    log "Stage 3 training is enabled as an explicit ablation."
     stage3_cmd=("$PYTHON" -u pinn_thin_layer_v9_6.py --arch "$STAGE3_ARCH" --epochs "$STAGE3_EPOCHS" --resume-checkpoint "$STAGE2_BEST" --reset-optimizer-state --reset-best-score --checkpoint-dir "$STAGE3_DIR/checkpoints" --learning-rate "$STAGE3_LR" --early-stop-min-epochs "$STAGE3_MIN_EPOCHS" --lift-time-grid "$LIFT_TIME_GRID")
     add_common_args stage3_cmd
     add_fdm_compare_args stage3_cmd "$STAGE3_DIR"
     if [[ "$DISABLE_EARLY_STOP" == "1" ]]; then stage3_cmd+=(--no-early-stop); fi
-    run_stage "Stage 3" "$LOG_DIR/stage3_inventory_lift_training.log" "${stage3_cmd[@]}"
+    run_stage "Stage 3 training ablation" "$LOG_DIR/stage3_inventory_lift_training.log" "${stage3_cmd[@]}"
+else
+    log "Stage 3 uses zero-training Inventory-Hermite lift on Stage 2 best."
 fi
 
 compare_one "$STAGE1_ARCH" "$STAGE1_BEST" "stage1_dynamic_best"
 compare_one "$STAGE2_ARCH" "$STAGE2_BEST" "stage2_clean_best"
-compare_one "$STAGE3_ARCH" "$STAGE3_CURRENT" "stage3_lift_current"
-compare_one "$STAGE3_ARCH" "$STAGE3_BEST" "stage3_lift_best"
+compare_one "$STAGE3_ARCH" "$STAGE2_BEST" "stage3_lift_zero"
+if [[ "$TRAIN_LIFT" == "1" ]]; then
+    compare_one "$STAGE3_ARCH" "$STAGE3_CURRENT" "stage3_lift_current"
+    compare_one "$STAGE3_ARCH" "$STAGE3_BEST" "stage3_lift_best"
+fi
 
 log "DONE: $RUN_ROOT"
