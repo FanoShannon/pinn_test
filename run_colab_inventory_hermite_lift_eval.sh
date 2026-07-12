@@ -4,6 +4,7 @@ set -euo pipefail
 WORK_DIR="${WORK_DIR:-/content/gdrive/MyDrive/pinn_v96}"
 PYTHON="${PYTHON:-python}"
 CLEAN_BEST="${CLEAN_BEST:-}"
+DRIVE_ROOT="${DRIVE_ROOT:-/content/gdrive/MyDrive/pinn_v96}"
 FDM_PKL="${FDM_PKL:-/content/gdrive/MyDrive/FDM_parameter_scale_0711/gamma1_k1_v42_thin_layer_catalytic_v42.pkl}"
 OUTPUT_DIR="${OUTPUT_DIR:-/content/gdrive/MyDrive/pinn_v96/runs_inventory_hermite_lift/$(date +%Y%m%d_%H%M%S)}"
 
@@ -14,7 +15,14 @@ GREEN_KERNEL_POINTS="${GREEN_KERNEL_POINTS:-64}"
 LIFT_TIME_GRID="${LIFT_TIME_GRID:-1024}"
 
 if [[ -z "$CLEAN_BEST" || ! -f "$CLEAN_BEST" ]]; then
-    echo "ERROR: set CLEAN_BEST to the clean physics-best checkpoint." >&2
+    echo "CLEAN_BEST path is missing or invalid; searching under $DRIVE_ROOT ..."
+    CLEAN_BEST="$(find "$DRIVE_ROOT" -type f \
+        -name 'pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_best.pth' \
+        -print | sort | tail -n 1)"
+fi
+if [[ -z "$CLEAN_BEST" || ! -f "$CLEAN_BEST" ]]; then
+    echo "ERROR: no clean physics-best checkpoint found under $DRIVE_ROOT." >&2
+    echo "Run: find $DRIVE_ROOT -type f -name '*multiscale_film_tracegreen_clean*best.pth'" >&2
     exit 1
 fi
 if [[ ! -f "$FDM_PKL" ]]; then
@@ -26,6 +34,8 @@ mkdir -p "$OUTPUT_DIR"
 cd "$WORK_DIR"
 export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+echo "Using clean checkpoint: $CLEAN_BEST"
+echo "Using FDM reference: $FDM_PKL"
 
 "$PYTHON" -u compare_concentration_fields.py \
     --arch multiscale_film_tracegreen_conservative_lift \
