@@ -643,7 +643,10 @@ optimizer state:
 ```
 
 Parameterized checkpoints record the ProductIntegral operator version and
-fixed-point iteration count.  Older Film-Abel kparam checkpoints are rejected
+fixed-point/Newton iteration counts.  The fixed ProductIntegral baseline keeps
+one Newton projection, while kparam uses four unrolled projections so the
+stiff `k=100` validation case reaches the same closure tolerance.  Older
+Film-Abel or one-projection kparam checkpoints are rejected
 for resume instead of being silently interpreted with the new interface.
 
 Multi-case FDM comparison remains posterior-only.  The Colab script evaluates
