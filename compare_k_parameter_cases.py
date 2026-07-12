@@ -65,6 +65,11 @@ def main():
     for k_value, fdm_path in args.case:
         label = case_label(k_value)
         output_json = output_dir / f"{label}_metrics.json"
+        print(
+            f"Running posterior case k={k_value:g} "
+            f"with architecture={eval_arch}",
+            flush=True,
+        )
         command = [
             sys.executable,
             "-u",
