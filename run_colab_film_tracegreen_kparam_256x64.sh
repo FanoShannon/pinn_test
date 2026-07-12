@@ -20,6 +20,8 @@ GREEN_TIME_GRID="${GREEN_TIME_GRID:-256}"
 GREEN_KERNEL_POINTS="${GREEN_KERNEL_POINTS:-64}"
 BASE_TRAIN_POINTS="${BASE_TRAIN_POINTS:-8000}"
 MAX_TRAIN_POINTS="${MAX_TRAIN_POINTS:-9000}"
+LIFT_TIME_GRID="${LIFT_TIME_GRID:-4096}"
+ZERO_SHOT_APPLY_LIFT="${ZERO_SHOT_APPLY_LIFT:-1}"
 
 FDM_K01="${FDM_K01:-/content/gdrive/MyDrive/FDM/kcat0p1_v42_thin_layer_catalytic_v42.pkl}"
 FDM_K001="${FDM_K001:-/content/gdrive/MyDrive/FDM/kcat0p01_v42_thin_layer_catalytic_v42.pkl}"
@@ -32,7 +34,7 @@ K1_BASELINE_METRICS="${K1_BASELINE_METRICS:-}"
 K1_HISTORICAL_METRICS="${K1_HISTORICAL_METRICS:-}"
 
 if [[ -z "$WARM_START_CKPT" || ! -f "$WARM_START_CKPT" ]]; then
-    echo "Set WARM_START_CKPT to the fixed k=1 ProductIntegral best checkpoint." >&2
+    echo "Set WARM_START_CKPT to an existing fixed or kparam checkpoint." >&2
     exit 1
 fi
 
@@ -56,14 +58,30 @@ CASES=()
 [[ -f "$FDM_K100" ]] && CASES+=(--case "100=$FDM_K100")
 
 if [[ ${#CASES[@]} -gt 0 ]]; then
-    "$PYTHON" -u compare_k_parameter_cases.py \
-        --checkpoint "$WARM_START_CKPT" \
-        --output-dir "$ZERO_SHOT_DIR" \
-        --green-time-grid "$GREEN_TIME_GRID" \
-        --green-kernel-points "$GREEN_KERNEL_POINTS" \
-        --zero-shot-fixed-reference \
-        "${CASES[@]}" \
-        2>&1 | tee "${LOG_DIR}/zero_shot_compare.log"
+    ZERO_SHOT_CMD=(
+        "$PYTHON" -u compare_k_parameter_cases.py
+        --checkpoint "$WARM_START_CKPT"
+        --output-dir "$ZERO_SHOT_DIR"
+        --green-time-grid "$GREEN_TIME_GRID"
+        --green-kernel-points "$GREEN_KERNEL_POINTS"
+        --zero-shot-fixed-reference
+        "${CASES[@]}"
+    )
+    if [[ "$ZERO_SHOT_APPLY_LIFT" == "1" ]]; then
+        ZERO_SHOT_CMD+=(--apply-inventory-lift --lift-time-grid "$LIFT_TIME_GRID")
+    fi
+    "${ZERO_SHOT_CMD[@]}" 2>&1 | tee "${LOG_DIR}/zero_shot_compare.log"
+fi
+
+if [[ "$EPOCHS" == "0" && ${#CASES[@]} -eq 0 ]]; then
+    echo "EPOCHS=0 requested, but no FDM case files were found." >&2
+    exit 1
+fi
+
+if [[ "$EPOCHS" == "0" ]]; then
+    echo "EPOCHS=0: posterior-only evaluation completed; training skipped."
+    echo "Summary: ${ZERO_SHOT_DIR}/k_parameter_summary.json"
+    exit 0
 fi
 
 "$PYTHON" -u pinn_thin_layer_v9_6.py \
@@ -108,7 +126,7 @@ if [[ ${#CASES[@]} -gt 0 ]]; then
         --green-time-grid "$GREEN_TIME_GRID"
         --green-kernel-points "$GREEN_KERNEL_POINTS"
         --apply-inventory-lift
-        --lift-time-grid 4096
+        --lift-time-grid "$LIFT_TIME_GRID"
         "${CASES[@]}"
     )
     [[ -f "$K1_BASELINE_METRICS" ]] && COMPARE_CMD+=(--k1-baseline-metrics "$K1_BASELINE_METRICS")

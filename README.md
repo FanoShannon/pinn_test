@@ -656,6 +656,11 @@ dimensionless errors.  Final comparison applies the high-resolution,
 posterior-only inventory Hermite lift; FDM remains excluded from every training
 loss.  A zero-shot physics audit can use the same comparison
 driver with `--zero-shot-fixed-reference` and a fixed clean checkpoint.
+The runner now applies the same inventory lift to zero-shot and trained
+posterior evaluations by default.  Set `EPOCHS=0` to evaluate the checkpoint in
+`WARM_START_CKPT` over all available FDM cases and exit without training; each
+case prints a progress line and the summary is stored under the selected
+`RUN_TAG/zero_shot_compare` directory.
 
 Generate the seven v4.2 posterior cases with the stable finite-volume profiles
 before training or evaluation:
