@@ -2042,7 +2042,7 @@ class ThinLayerNet_v9_6_InventoryHermiteLift(
         )
 
     def _compute_lift_grid(self, device, dtype, create_graph=False):
-        if not create_graph and self._lift_eval_cache is not None:
+        if self._lift_eval_cache is not None:
             cache = self._lift_eval_cache
             if cache[0].device == device and cache[0].dtype == dtype:
                 return cache
@@ -2108,7 +2108,7 @@ class ThinLayerNet_v9_6_InventoryHermiteLift(
         result = (T_grid, source, source_slope, amplitude_grid)
         if not create_graph:
             result = tuple(value.detach() for value in result)
-            self._lift_eval_cache = result
+        self._lift_eval_cache = result
         return result
 
     def lift_amplitude(self, T_raw):
@@ -6110,6 +6110,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
 
         optimizer.step()
         scheduler.step()
+        if hasattr(model_thin, "clear_lift_cache"):
+            model_thin.clear_lift_cache()
         if hasattr(model_ext, "clear_step_cache"):
             model_ext.clear_step_cache()
         completed_step = epoch - start_epoch + 1
