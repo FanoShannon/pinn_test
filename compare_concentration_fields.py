@@ -517,6 +517,39 @@ def build_models(
             history_grad=green_history_grad,
             cache_history=False,
         )
+    elif arch in {
+        "multiscale_film_tracegreen_gammaparam",
+        "multiscale_film_tracegreen_gammaparam_lift",
+    }:
+        if not np.isclose(pinn.k_cat_star, pinn.REFERENCE_K_CAT_STAR, rtol=0.0, atol=1e-12):
+            raise ValueError("multiscale_film_tracegreen_gammaparam requires k_cat=1")
+        interface_state = pinn.InterfaceStateNet_v9_6_FilmTraceGammaParam(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        interface_state.set_gamma(pinn.gamma)
+        thin_class = (
+            pinn.ThinLayerNet_v9_6_InventoryHermiteLiftGammaParam
+            if arch.endswith("_lift")
+            else pinn.ThinLayerNet_v9_6_MultiscaleHermiteGammaParam
+        )
+        thin_kwargs = {
+            "interface_state": interface_state,
+            "normalize_inputs": normalize_inputs,
+        }
+        if arch.endswith("_lift"):
+            thin_kwargs["lift_time_grid_points"] = lift_time_grid
+        model_thin = thin_class(**thin_kwargs)
+        model_ext = pinn.ExternalNet_v9_6_FilmTraceGreenGammaParam(
+            pinn.gamma,
+            interface_state=interface_state,
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+            history_grad=green_history_grad,
+            cache_history=False,
+        )
     elif arch == "multiscale_green_grid_film_abel_ema":
         interface_state = pinn.InterfaceStateNet_v9_6_FilmAbelEMA(
             normalize_inputs=normalize_inputs,
@@ -577,16 +610,26 @@ def configure_evaluation_parameters(args, fdm):
     is_kparam_checkpoint = (
         checkpoint_params.get("parameterization") == pinn.KPARAM_PARAMETERIZATION
     )
+    is_gammaparam_checkpoint = (
+        checkpoint_params.get("parameterization") == pinn.GAMMAPARAM_PARAMETERIZATION
+    )
+    target_kparam = "kparam" in args.arch
+    target_gammaparam = "gammaparam" in args.arch
 
     gamma_value = args.gamma
     if gamma_value is None:
-        gamma_value = checkpoint_params.get("gamma", fdm_params.get("gamma", pinn.REFERENCE_GAMMA))
+        if is_gammaparam_checkpoint or target_gammaparam:
+            gamma_value = fdm_params.get("gamma", pinn.GAMMAPARAM_REFERENCE)
+        else:
+            gamma_value = checkpoint_params.get("gamma", fdm_params.get("gamma", pinn.REFERENCE_GAMMA))
 
     k_cat_value = args.k_cat_star
     if k_cat_value is None:
         fdm_k = fdm_params.get("k_cat", fdm_params.get("k_cat_star"))
-        if is_kparam_checkpoint or getattr(args, "zero_shot_fixed_reference", False):
+        if is_kparam_checkpoint or target_kparam:
             k_cat_value = pinn.KPARAM_REFERENCE if fdm_k is None else fdm_k
+        elif is_gammaparam_checkpoint or target_gammaparam:
+            k_cat_value = pinn.REFERENCE_K_CAT_STAR
         else:
             k_cat_value = checkpoint_params.get(
                 "k_cat_star",
@@ -745,6 +788,8 @@ def compare(args):
     )
     if pinn.is_k_parameterized(model_ext=model_ext):
         pinn.set_model_k_cat(model_thin, model_ext, pinn.k_cat_star)
+    if pinn.is_gamma_parameterized(model_ext=model_ext):
+        pinn.set_model_gamma(model_thin, model_ext, pinn.gamma)
     epoch = load_checkpoint(
         model_thin,
         model_ext,
@@ -1093,8 +1138,8 @@ def main():
     parser.add_argument("--k-cat-star", type=float, default=None,
                         help="Fixed k_cat*. Defaults to checkpoint metadata, then FDM metadata.")
     parser.add_argument("--zero-shot-fixed-reference", action="store_true",
-                        help="Allow a fixed k=1 clean checkpoint to seed kparam evaluation without resume semantics.")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_productintegral", "multiscale_film_tracegreen_productintegral_lift", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_conservative_lift", "multiscale_film_tracegreen_kparam", "multiscale_film_tracegreen_kparam_lift", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+                        help="Allow a fixed reference checkpoint to seed parameterized zero-shot evaluation.")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_productintegral", "multiscale_film_tracegreen_productintegral_lift", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_conservative_lift", "multiscale_film_tracegreen_kparam", "multiscale_film_tracegreen_kparam_lift", "multiscale_film_tracegreen_gammaparam", "multiscale_film_tracegreen_gammaparam_lift", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256)
     parser.add_argument("--green-kernel-points", type=int, default=32)
     parser.add_argument("--lift-time-grid", type=int, default=1024)

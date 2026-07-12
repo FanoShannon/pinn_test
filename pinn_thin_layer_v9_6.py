@@ -62,6 +62,13 @@ KPARAM_LOG10_SCALE = 1.0
 KPARAM_SUPPORT = "positive_finite"
 KPARAM_PARAMETERIZATION = "k_cat_log10"
 KPARAM_INTERFACE_OPERATOR = "product_integral_piecewise_linear_newton_v2"
+GAMMAPARAM_REFERENCE = 10.0
+GAMMAPARAM_ANCHORS = (0.1, 1.0, 100.0)
+GAMMAPARAM_VALIDATION_VALUES = (0.1, 0.316227766, 1.0, 3.16227766, 10.0, 31.6227766, 100.0)
+GAMMAPARAM_CALIBRATION_RANGE = (0.1, 100.0)
+GAMMAPARAM_SUPPORT = "positive_finite"
+GAMMAPARAM_PARAMETERIZATION = "gamma_log10"
+GAMMAPARAM_INTERFACE_OPERATOR = "normalized_product_integral_piecewise_linear_newton_v1"
 
 k_cat_star = REFERENCE_K_CAT_STAR
 gamma = REFERENCE_GAMMA
@@ -138,6 +145,32 @@ def set_model_k_cat(model_thin, model_ext, value):
     setter(value)
 
 
+def model_active_gamma(model_ext=None, model_thin=None):
+    for model in (model_ext, model_thin):
+        if model is None:
+            continue
+        getter = getattr(model, "active_gamma", None)
+        if getter is not None:
+            return float(getter())
+        interface_state = getattr(model, "interface_state", None)
+        getter = getattr(interface_state, "active_gamma", None)
+        if getter is not None:
+            return float(getter())
+    return float(gamma)
+
+
+def set_model_gamma(model_thin, model_ext, value):
+    setter = getattr(model_ext, "set_gamma", None)
+    if setter is None:
+        setter = getattr(model_thin, "set_gamma", None)
+    if setter is None:
+        raise TypeError("This architecture does not support runtime gamma conditioning")
+    setter(value)
+    clear_lift = getattr(model_thin, "clear_lift_cache", None)
+    if clear_lift is not None:
+        clear_lift()
+
+
 def activate_k_from_input(interface_state, x_input):
     """Read one physical k_cat condition from [T, X, k_cat]."""
     if x_input.shape[1] < 3:
@@ -159,14 +192,38 @@ def activate_k_from_input(interface_state, x_input):
     return x_input[:, :2]
 
 
-def conditioned_model_inputs(model, T_raw, X_raw, k_value=None):
+def activate_gamma_from_input(interface_state, x_input):
+    """Read one physical gamma condition from [T, X, gamma]."""
+    if x_input.shape[1] < 3:
+        return x_input[:, :2]
+    gamma_values = x_input[:, 2:3]
+    if not torch.isfinite(gamma_values).all():
+        raise ValueError("gamma input contains NaN or Inf")
+    gamma_value = float(gamma_values[0].detach().cpu())
+    if not torch.allclose(
+        gamma_values,
+        torch.ones_like(gamma_values) * gamma_values[0:1],
+        rtol=1e-6,
+        atol=1e-8,
+    ):
+        raise ValueError(
+            "Product-integral gammaparam batches must contain one shared gamma value"
+        )
+    interface_state.set_gamma(gamma_value)
+    return x_input[:, :2]
+
+
+def conditioned_model_inputs(model, T_raw, X_raw, condition_value=None):
     inputs = torch.cat([T_raw, X_raw], dim=1)
-    if not getattr(model, "k_parameterized", False):
-        return inputs
-    if k_value is None:
-        k_value = model_active_k_cat(model_thin=model)
-    k_column = torch.ones_like(T_raw) * float(k_value)
-    return torch.cat([inputs, k_column], dim=1)
+    if getattr(model, "k_parameterized", False):
+        if condition_value is None:
+            condition_value = model_active_k_cat(model_thin=model)
+        return torch.cat([inputs, torch.ones_like(T_raw) * float(condition_value)], dim=1)
+    if getattr(model, "gamma_parameterized", False):
+        if condition_value is None:
+            condition_value = model_active_gamma(model_thin=model)
+        return torch.cat([inputs, torch.ones_like(T_raw) * float(condition_value)], dim=1)
+    return inputs
 
 
 def is_k_parameterized(model_ext=None, model_thin=None):
@@ -176,7 +233,35 @@ def is_k_parameterized(model_ext=None, model_thin=None):
     )
 
 
+def is_gamma_parameterized(model_ext=None, model_thin=None):
+    return bool(
+        getattr(model_ext, "gamma_parameterized", False) or
+        getattr(model_thin, "gamma_parameterized", False)
+    )
+
+
 def parameterization_metadata(model_ext):
+    if is_gamma_parameterized(model_ext=model_ext):
+        interface_state = getattr(model_ext, "interface_state", None)
+        metadata = {
+            "parameterization": GAMMAPARAM_PARAMETERIZATION,
+            "gamma_support": GAMMAPARAM_SUPPORT,
+            "gamma_reference": float(getattr(model_ext, "gamma_reference", GAMMAPARAM_REFERENCE)),
+            "gamma_calibration_range": list(GAMMAPARAM_CALIBRATION_RANGE),
+            "gamma_condition_transform": "tanh(log10(gamma/gamma_reference))",
+            "gamma_sampling": "one_gamma_per_step_60pct_anchors_40pct_log_uniform",
+            "gamma_interface_operator": getattr(
+                interface_state, "gammaparam_interface_operator", GAMMAPARAM_INTERFACE_OPERATOR
+            ),
+            "product_integral_fixed_point_iterations": int(
+                getattr(interface_state, "fixed_point_iterations", 2)
+            ),
+            "product_integral_newton_projection_iterations": int(
+                getattr(interface_state, "newton_projection_iterations", 4)
+            ),
+        }
+        metadata.update(getattr(model_ext, "gamma_sampling_metadata", {}))
+        return metadata
     if not is_k_parameterized(model_ext=model_ext):
         return {}
     metadata = {
@@ -295,6 +380,8 @@ MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CONSERVATIVE_LIFT_PATH = './pinn_thin_layer
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CONSERVATIVE_LIFT_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_conservative_lift_best.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_kparam.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_kparam_best.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_GAMMAPARAM_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_gammaparam.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_GAMMAPARAM_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_gammaparam_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema_best.pth'
 MODEL_V96_MULTISCALE_BUFFER_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_buffer.pth'
@@ -402,6 +489,12 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     }:
         current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_PATH
         best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_BEST_PATH
+    elif arch in {
+        "multiscale_film_tracegreen_gammaparam",
+        "multiscale_film_tracegreen_gammaparam_lift",
+    }:
+        current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_GAMMAPARAM_PATH
+        best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_GAMMAPARAM_BEST_PATH
     elif arch == "multiscale_green_grid_film_abel_ema":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH
@@ -954,6 +1047,14 @@ class InterfaceStateNet_v9_6_FilmAbel(nn.Module):
     def _active_k_tensor(self, reference):
         return torch.as_tensor(
             self.active_k_cat(), device=reference.device, dtype=reference.dtype
+        )
+
+    def active_gamma(self):
+        return float(gamma)
+
+    def _active_gamma_tensor(self, reference):
+        return torch.as_tensor(
+            self.active_gamma(), device=reference.device, dtype=reference.dtype
         )
 
     def condition_cache_key(self):
@@ -1862,6 +1963,10 @@ class InterfaceStateNet_v9_6_FilmTraceProductIntegral(
         t_grid = self.time_grid.to(device=device, dtype=dtype)
         dt = float(T_sim) / float(self.time_grid_points - 1)
         diffusion = torch.as_tensor(D_rel_D, device=device, dtype=dtype)
+        gamma_t = self._active_gamma_tensor(t_grid).reshape(1, 1)
+        normalized_gamma_state = bool(
+            getattr(self, "normalized_gamma_product_integral", False)
+        )
         current_cell_factor = 2.0 * torch.sqrt(
             torch.as_tensor(dt, device=device, dtype=dtype)
             / torch.clamp(np.pi * diffusion, min=1e-12)
@@ -1887,7 +1992,8 @@ class InterfaceStateNet_v9_6_FilmTraceProductIntegral(
 
             if idx == 0:
                 c_d_int = torch.zeros(1, 1, device=device, dtype=dtype)
-                c_c_int = torch.as_tensor(gamma, device=device, dtype=dtype).reshape(1, 1)
+                d_int = torch.zeros_like(c_d_int)
+                c_c_int = gamma_t
                 c_b_int, j_rxn, surface_slope = self._film_reaction(c_b_surface, c_c_int)
                 fixed_point_residual = torch.zeros_like(j_rxn)
             else:
@@ -1898,14 +2004,25 @@ class InterfaceStateNet_v9_6_FilmTraceProductIntegral(
                 j_previous = j_known[-1:]
                 j_guess = j_previous
 
+                if normalized_gamma_state:
+                    completed_state = completed / gamma_t
+                    current_cell_state_factor = current_cell_factor / gamma_t
+                else:
+                    completed_state = completed
+                    current_cell_state_factor = current_cell_factor
+
                 for _ in range(self.fixed_point_iterations):
-                    c_d_candidate = completed + current_cell_factor * (
+                    state_candidate = completed_state + current_cell_state_factor * (
                         (1.0 / 3.0) * j_previous + (2.0 / 3.0) * j_guess
                     )
-                    c_c_candidate = gamma - c_d_candidate
+                    c_c_candidate = (
+                        gamma_t * (1.0 - state_candidate)
+                        if normalized_gamma_state
+                        else gamma_t - state_candidate
+                    )
                     _, j_guess, _ = self._film_reaction(c_b_surface, c_c_candidate)
 
-                c_d_int = completed + current_cell_factor * (
+                state_int = completed_state + current_cell_state_factor * (
                     (1.0 / 3.0) * j_previous + (2.0 / 3.0) * j_guess
                 )
                 # Repeated analytic Newton projections close the stiff scalar
@@ -1913,24 +2030,40 @@ class InterfaceStateNet_v9_6_FilmTraceProductIntegral(
                 # baseline keeps one projection; kparam uses a few unrolled
                 # projections without adding learned degrees of freedom.
                 for _ in range(self.newton_projection_iterations):
-                    c_c_int = gamma - c_d_int
+                    c_c_int = (
+                        gamma_t * (1.0 - state_int)
+                        if normalized_gamma_state
+                        else gamma_t - state_int
+                    )
                     _, j_rxn, _ = self._film_reaction(c_b_surface, c_c_int)
                     d_j_d_c_d = self._product_integral_d_j_d_c_d(
                         c_b_surface, c_c_int
                     )
-                    closure = c_d_int - completed - current_cell_factor * (
+                    d_j_d_state = (
+                        gamma_t * d_j_d_c_d
+                        if normalized_gamma_state
+                        else d_j_d_c_d
+                    )
+                    closure = state_int - completed_state - current_cell_state_factor * (
                         (1.0 / 3.0) * j_previous + (2.0 / 3.0) * j_rxn
                     )
                     closure_derivative = (
                         1.0
-                        - current_cell_factor * (2.0 / 3.0) * d_j_d_c_d
+                        - current_cell_state_factor * (2.0 / 3.0) * d_j_d_state
                     )
-                    c_d_int = c_d_int - closure / torch.clamp(
+                    state_int = state_int - closure / torch.clamp(
                         closure_derivative, min=1e-8
                     )
-                c_c_int = gamma - c_d_int
+                if normalized_gamma_state:
+                    d_int = state_int
+                    c_d_int = gamma_t * d_int
+                    c_c_int = gamma_t * (1.0 - d_int)
+                else:
+                    c_d_int = state_int
+                    d_int = c_d_int / gamma_t
+                    c_c_int = gamma_t - c_d_int
                 c_b_int, j_rxn, surface_slope = self._film_reaction(c_b_surface, c_c_int)
-                fixed_point_residual = c_d_int - completed - current_cell_factor * (
+                fixed_point_residual = state_int - completed_state - current_cell_state_factor * (
                     (1.0 / 3.0) * j_previous + (2.0 / 3.0) * j_rxn
                 )
 
@@ -1950,6 +2083,7 @@ class InterfaceStateNet_v9_6_FilmTraceProductIntegral(
 
         j_grid = torch.cat(j_rows, dim=0)
         c_d_grid = torch.cat(cd_int_rows, dim=0)
+        d_grid = c_d_grid / gamma_t
         if self.time_grid_points > 1:
             d_j_grid = torch.zeros_like(j_grid)
             d_j_grid[1:-1] = (j_grid[2:] - j_grid[:-2]) / (2.0 * dt)
@@ -1959,8 +2093,10 @@ class InterfaceStateNet_v9_6_FilmTraceProductIntegral(
             d_j_grid = torch.zeros_like(j_grid)
 
         fixed_point_residual = torch.cat(fixed_point_residual_rows, dim=0)
-        lower_violation = torch.relu(-c_d_grid)
-        upper_violation = torch.relu(c_d_grid - gamma)
+        diagnostic_state = d_grid if normalized_gamma_state else c_d_grid
+        diagnostic_upper = torch.ones_like(gamma_t) if normalized_gamma_state else gamma_t
+        lower_violation = torch.relu(-diagnostic_state)
+        upper_violation = torch.relu(diagnostic_state - diagnostic_upper)
         self._last_product_integral_diagnostics = {
             "c_d_min": c_d_grid.detach().min(),
             "c_d_max": c_d_grid.detach().max(),
@@ -1974,6 +2110,7 @@ class InterfaceStateNet_v9_6_FilmTraceProductIntegral(
             "C_B_int": torch.cat(cb_int_rows, dim=0),
             "C_C_int": torch.cat(cc_int_rows, dim=0),
             "C_D_int": c_d_grid,
+            "C_D_fraction": d_grid,
             "C_D_prior": c_d_grid,
             "J": j_grid,
             "dJ": d_j_grid,
@@ -1989,8 +2126,14 @@ class InterfaceStateNet_v9_6_FilmTraceProductIntegral(
         # Interpolate the already solved causal trace.  Re-evaluating the old
         # continuous-time Abel/bounded path here would reintroduce its bias.
         history = self._history_grid(T_raw)
-        c_d_int = self._interp_multi_grid(T_raw, history["C_D_int"])
-        c_c_int = gamma - c_d_int
+        gamma_t = self._active_gamma_tensor(T_raw)
+        if getattr(self, "normalized_gamma_product_integral", False):
+            d_int = self._interp_multi_grid(T_raw, history["C_D_fraction"])
+            c_d_int = gamma_t * d_int
+            c_c_int = gamma_t * (1.0 - d_int)
+        else:
+            c_d_int = self._interp_multi_grid(T_raw, history["C_D_int"])
+            c_c_int = gamma_t - c_d_int
         _, _, c_b_surface, _ = self._surface_state(T_raw)
         c_b_int, j_rxn, surface_slope = self._film_reaction(c_b_surface, c_c_int)
         return {
@@ -2084,6 +2227,60 @@ class InterfaceStateNet_v9_6_FilmTraceKParam(
     def _history_feature_flux_scale(self):
         return max(
             characteristic_reaction_flux(gamma, self.active_k_cat()),
+            1e-8,
+        )
+
+
+class InterfaceStateNet_v9_6_FilmTraceGammaParam(
+    InterfaceStateNet_v9_6_FilmTraceKParam
+):
+    """Product-integral interface with normalized C_D/gamma state."""
+
+    def __init__(self, *args, gamma_reference=GAMMAPARAM_REFERENCE,
+                 newton_projection_iterations=1, **kwargs):
+        super().__init__(
+            *args,
+            k_reference=REFERENCE_K_CAT_STAR,
+            newton_projection_iterations=newton_projection_iterations,
+            **kwargs,
+        )
+        self.k_parameterized = False
+        self.gamma_parameterized = True
+        self.normalized_gamma_product_integral = True
+        self.gammaparam_interface_operator = GAMMAPARAM_INTERFACE_OPERATOR
+        self.gamma_reference = float(gamma_reference)
+        if not np.isfinite(self.gamma_reference) or self.gamma_reference <= 0.0:
+            raise ValueError("gamma_reference must be finite and positive")
+        self.register_buffer(
+            "_gamma_condition",
+            torch.tensor(self.gamma_reference, dtype=torch.float64),
+            persistent=False,
+        )
+
+    def set_gamma(self, value):
+        value = float(value)
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(f"gamma must be finite and positive, got {value}")
+        if not np.isclose(value, self.active_gamma(), rtol=0.0, atol=1e-12):
+            self._gamma_condition.fill_(value)
+            self.clear_step_cache()
+
+    def active_gamma(self):
+        return float(self._gamma_condition.detach().cpu())
+
+    def _active_gamma_tensor(self, reference):
+        return self._gamma_condition.to(device=reference.device, dtype=reference.dtype)
+
+    def condition_cache_key(self):
+        return ("gamma", self.active_gamma())
+
+    def log_gamma_condition(self, reference):
+        value = self._active_gamma_tensor(reference)
+        return torch.tanh(torch.log10(value / self.gamma_reference))
+
+    def _history_feature_flux_scale(self):
+        return max(
+            characteristic_reaction_flux(self.active_gamma(), REFERENCE_K_CAT_STAR),
             1e-8,
         )
 
@@ -2299,6 +2496,48 @@ class ThinLayerNet_v9_6_MultiscaleHermiteKParam(ThinLayerNet_v9_6_MultiscaleHerm
         return base + k_feature * self.k_adapter(adapter_input)
 
 
+class ThinLayerNet_v9_6_MultiscaleHermiteGammaParam(
+    ThinLayerNet_v9_6_MultiscaleHermite
+):
+    """Hermite field with a zero-at-gamma=10 conditional adapter."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.gamma_parameterized = True
+        self.gamma_adapter = MultiscaleResidualHead(
+            out_features=2,
+            width=64,
+            depth=2,
+            in_features=3,
+        )
+        nn.init.zeros_(self.gamma_adapter.net[-1].weight)
+        nn.init.zeros_(self.gamma_adapter.net[-1].bias)
+
+    def active_gamma(self):
+        return self.interface_state.active_gamma()
+
+    def set_gamma(self, value):
+        self.interface_state.set_gamma(value)
+
+    def forward(self, x_input):
+        base_input = activate_gamma_from_input(self.interface_state, x_input)
+        return super().forward(base_input)
+
+    def _raw_field(self, x_net, T_raw, X_raw):
+        base = self.net(x_net)
+        eta = self.interface_state.log_gamma_condition(T_raw)
+        gamma_feature = torch.ones_like(T_raw) * eta
+        if self.normalize_inputs:
+            adapter_input = torch.cat([
+                normalize_time(T_raw),
+                normalize_thin_x(X_raw),
+                gamma_feature,
+            ], dim=1)
+        else:
+            adapter_input = torch.cat([T_raw, X_raw, gamma_feature], dim=1)
+        return base + gamma_feature * self.gamma_adapter(adapter_input)
+
+
 class ThinLayerNet_v9_6_MultiscaleHermiteConservative(ThinLayerNet_v9_6_MultiscaleHermite):
     """Checkpoint-compatible Hermite thin layer with inventory supervision."""
 
@@ -2491,6 +2730,20 @@ class ThinLayerNet_v9_6_InventoryHermiteLiftKParam(
         return ThinLayerNet_v9_6_InventoryHermiteLift.forward(self, base_input)
 
 
+class ThinLayerNet_v9_6_InventoryHermiteLiftGammaParam(
+    ThinLayerNet_v9_6_InventoryHermiteLift,
+    ThinLayerNet_v9_6_MultiscaleHermiteGammaParam,
+):
+    """Posterior-only inventory lift over the gamma-conditional field."""
+
+    gamma_parameterized = True
+    gammaparam_posterior_lift = True
+
+    def forward(self, x_input):
+        base_input = activate_gamma_from_input(self.interface_state, x_input)
+        return ThinLayerNet_v9_6_InventoryHermiteLift.forward(self, base_input)
+
+
 class ThinLayerNet_v9_6_MultiscaleHermiteMixedFlux(
     ThinLayerNet_v9_6_MultiscaleHermiteConservative
 ):
@@ -2532,8 +2785,12 @@ def thin_current_components(model_thin, T_raw, quadrature_points=16, create_grap
 
     X_surface = torch.zeros_like(T_raw, requires_grad=True)
     active_k = model_active_k_cat(model_thin=model_thin)
+    active_condition = (
+        model_active_gamma(model_thin=model_thin)
+        if is_gamma_parameterized(model_thin=model_thin) else active_k
+    )
     C_A_surface, _ = model_thin(
-        conditioned_model_inputs(model_thin, T_raw, X_surface, active_k)
+        conditioned_model_inputs(model_thin, T_raw, X_surface, active_condition)
     )
     C_A_X_surface = torch.autograd.grad(
         C_A_surface.sum(),
@@ -2551,7 +2808,7 @@ def thin_current_components(model_thin, T_raw, quadrature_points=16, create_grap
     T_quad = T_raw.expand(-1, quadrature_points)
     quad_t = T_quad.reshape(-1, 1)
     quad_x = X_quad.reshape(-1, 1)
-    quad_inputs = conditioned_model_inputs(model_thin, quad_t, quad_x, active_k)
+    quad_inputs = conditioned_model_inputs(model_thin, quad_t, quad_x, active_condition)
     _, C_B_quad = model_thin(quad_inputs)
     C_B_quad = C_B_quad.reshape(T_raw.shape[0], quadrature_points)
     M_B = 0.5 * delta * torch.sum(C_B_quad * weights.reshape(1, -1), dim=1, keepdim=True)
@@ -3868,6 +4125,44 @@ class ExternalNet_v9_6_FilmTraceGreenKParam(ExternalNet_v9_6_FilmTraceGreenClean
         return super().forward(base_input)
 
 
+class ExternalNet_v9_6_FilmTraceGreenGammaParam(
+    ExternalNet_v9_6_FilmTraceGreenClean
+):
+    """TraceGreen external field driven by a shared runtime gamma condition."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.gamma_parameterized = True
+        self.gamma_reference = float(self.interface_state.gamma_reference)
+
+    def active_gamma(self):
+        return self.interface_state.active_gamma()
+
+    def set_gamma(self, value):
+        self.interface_state.set_gamma(value)
+        self.gamma = self.interface_state.active_gamma()
+        self.clear_step_cache()
+
+    def tracegreen_residual_correction(self, T_raw, z, x_net):
+        scale = self.clean_residual_scale.to(device=T_raw.device, dtype=T_raw.dtype)
+        concentration_factor = self.interface_state._active_gamma_tensor(T_raw) / REFERENCE_GAMMA
+        return concentration_factor * scale * ExternalNet_v9_6_MultiscaleGreenGridFilmTrace.tracegreen_residual_correction(
+            self, T_raw, z, x_net
+        )
+
+    def pde_fields(self, x_input):
+        base_input = activate_gamma_from_input(self.interface_state, x_input)
+        return super().pde_fields(base_input)
+
+    def forward(self, x_input):
+        base_input = activate_gamma_from_input(self.interface_state, x_input)
+        c_d_base, residual = self.tracegreen_lift_and_residual(base_input)
+        C_D = c_d_base + residual
+        gamma_t = self.interface_state._active_gamma_tensor(C_D)
+        C_C = gamma_t - C_D
+        return C_C, C_D
+
+
 class ExternalNet_v9_6_MultiscaleGreenGridMemory(ExternalNet_v9_6_MultiscaleGreenGridDynamic):
     """Dynamic Green-grid model with causal memory and coordinate-safe basis.
 
@@ -4809,6 +5104,44 @@ def create_models_v96(
                 cache_history=green_cache_history,
             ),
         )
+    if arch in {
+        "multiscale_film_tracegreen_gammaparam",
+        "multiscale_film_tracegreen_gammaparam_lift",
+    }:
+        if not np.isclose(k_cat_star, REFERENCE_K_CAT_STAR, rtol=0.0, atol=1e-12):
+            raise ValueError(
+                "multiscale_film_tracegreen_gammaparam fixes k_cat=1; "
+                f"received k_cat={k_cat_star}"
+            )
+        interface_state = InterfaceStateNet_v9_6_FilmTraceGammaParam(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        interface_state.set_gamma(gamma)
+        thin_class = (
+            ThinLayerNet_v9_6_InventoryHermiteLiftGammaParam
+            if arch.endswith("_lift")
+            else ThinLayerNet_v9_6_MultiscaleHermiteGammaParam
+        )
+        thin_kwargs = {
+            "interface_state": interface_state,
+            "normalize_inputs": normalize_inputs,
+        }
+        if arch.endswith("_lift"):
+            thin_kwargs["lift_time_grid_points"] = lift_time_grid
+        return (
+            thin_class(**thin_kwargs),
+            ExternalNet_v9_6_FilmTraceGreenGammaParam(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
     if arch == "multiscale_green_grid_film_abel_ema":
         interface_state = InterfaceStateNet_v9_6_FilmAbelEMA(
             normalize_inputs=normalize_inputs,
@@ -4873,7 +5206,7 @@ def checkpoint_parameters(model_ext):
     parameters = {
         'sigma': sigma, 'theta_i': theta_i, 'theta_switch': theta_switch,
         'T_sim': T_sim, 'delta': delta, 'X_ext_max': X_ext_max,
-        'gamma': gamma,
+        'gamma': GAMMAPARAM_REFERENCE if is_gamma_parameterized(model_ext=model_ext) else gamma,
         'k_cat_star': KPARAM_REFERENCE if is_k_parameterized(model_ext=model_ext) else k_cat_star,
         'lambda_factor': lambda_factor,
         'normalize_inputs': USE_NORMALIZED_COORDS,
@@ -4942,7 +5275,10 @@ def validate_checkpoint_physical_parameters(
     allow_fixed_reference=False,
 ):
     parameters = checkpoint.get('parameters', {})
+    target_is_gammaparam = is_gamma_parameterized(model_ext=model_ext)
     for name, active in (("gamma", gamma), ("delta", delta)):
+        if name == "gamma" and target_is_gammaparam:
+            continue
         stored = parameters.get(name)
         if stored is None:
             continue
@@ -4953,6 +5289,48 @@ def validate_checkpoint_physical_parameters(
             )
 
     checkpoint_kind = parameters.get("parameterization", "fixed")
+    if target_is_gammaparam:
+        if checkpoint_kind == GAMMAPARAM_PARAMETERIZATION:
+            expected = {
+                "gamma_support": GAMMAPARAM_SUPPORT,
+                "gamma_condition_transform": "tanh(log10(gamma/gamma_reference))",
+                "gamma_interface_operator": GAMMAPARAM_INTERFACE_OPERATOR,
+            }
+            for name, active in expected.items():
+                if parameters.get(name) != active:
+                    raise ValueError(
+                        f"Checkpoint gamma-parameterization mismatch for {name}: "
+                        f"checkpoint={parameters.get(name)}, active={active}: {path}"
+                    )
+            stored_reference = parameters.get("gamma_reference")
+            if stored_reference is None or not np.isclose(
+                float(stored_reference), GAMMAPARAM_REFERENCE, rtol=1e-7, atol=1e-10
+            ):
+                raise ValueError(
+                    "Checkpoint gamma_reference mismatch: "
+                    f"checkpoint={stored_reference}, active={GAMMAPARAM_REFERENCE}: {path}"
+                )
+        elif allow_fixed_reference and checkpoint_kind == "fixed":
+            stored_gamma = float(parameters.get("gamma", GAMMAPARAM_REFERENCE))
+            stored_k = float(parameters.get("k_cat_star", REFERENCE_K_CAT_STAR))
+            if not np.isclose(stored_gamma, GAMMAPARAM_REFERENCE, rtol=1e-7, atol=1e-10):
+                raise ValueError(
+                    "Only a fixed gamma=10 checkpoint can warm-start the "
+                    f"gamma-parameterized model; checkpoint gamma={stored_gamma}: {path}"
+                )
+            if not np.isclose(stored_k, REFERENCE_K_CAT_STAR, rtol=1e-7, atol=1e-10):
+                raise ValueError(
+                    "Gamma-parameterized warm-start requires fixed k_cat=1; "
+                    f"checkpoint k_cat={stored_k}: {path}"
+                )
+        else:
+            raise ValueError(
+                "Gamma parameterization requires either a matching gammaparam resume "
+                "checkpoint or --warm-start-checkpoint with the fixed gamma=10, "
+                "k_cat=1 baseline."
+            )
+        return
+
     target_is_kparam = is_k_parameterized(model_ext=model_ext)
     if target_is_kparam:
         active_k = model_active_k_cat(model_ext=model_ext) if evaluation_k is None else float(evaluation_k)
@@ -5030,6 +5408,10 @@ def validate_checkpoint_physical_parameters(
             raise ValueError(
                 f"A k-parameterized checkpoint requires the kparam architecture: {path}"
             )
+        if checkpoint_kind == GAMMAPARAM_PARAMETERIZATION:
+            raise ValueError(
+                f"A gamma-parameterized checkpoint requires the gammaparam architecture: {path}"
+            )
         stored_k = parameters.get("k_cat_star")
         if stored_k is not None and not np.isclose(
             float(stored_k), float(k_cat_star), rtol=1e-7, atol=1e-10
@@ -5100,6 +5482,8 @@ def warm_start_model_v96(model_thin, model_ext, path):
     )
     if is_k_parameterized(model_ext=model_ext):
         set_model_k_cat(model_thin, model_ext, KPARAM_REFERENCE)
+    if is_gamma_parameterized(model_ext=model_ext):
+        set_model_gamma(model_thin, model_ext, GAMMAPARAM_REFERENCE)
     print(f"Warm-started model weights from {path}; optimizer and epoch were not loaded")
     return checkpoint
 
@@ -5203,12 +5587,19 @@ def print_physics_verification(results):
 def validate_model(model_thin, model_ext, device, epoch, verbose=True):
     model_thin.eval()
     model_ext.eval()
+    active_k = model_active_k_cat(model_ext=model_ext, model_thin=model_thin)
+    active_gamma = model_active_gamma(model_ext=model_ext, model_thin=model_thin)
+    active_condition = active_gamma if is_gamma_parameterized(
+        model_ext=model_ext, model_thin=model_thin
+    ) else active_k
 
     with torch.no_grad():
         # 1. Nernst误差
         T_test = torch.linspace(0, T_sim, 200, device=device).reshape(-1, 1)
         X_test = torch.zeros_like(T_test)
-        C_A, C_B = model_thin(torch.cat([T_test, X_test], dim=1))
+        C_A, C_B = model_thin(conditioned_model_inputs(
+            model_thin, T_test, X_test, active_condition
+        ))
         theta = potential_theta(T_test)
         nernst_err = torch.sqrt(torch.mean((C_A - C_B * torch.exp(theta))**2)).item()
         nernst_max_err = torch.max(torch.abs(C_A - C_B * torch.exp(theta))).item()
@@ -5217,9 +5608,12 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
         surface_state_err = torch.sqrt(torch.mean((C_A - C_A_eq)**2 + (C_B - C_B_eq)**2)).item()
 
         X_int = torch.ones_like(T_test) * delta
-        _, C_B_int = model_thin(torch.cat([T_test, X_int], dim=1))
-        C_C_int, _ = model_ext(torch.cat([T_test, X_int], dim=1))
-        active_k = model_active_k_cat(model_ext=model_ext, model_thin=model_thin)
+        _, C_B_int = model_thin(conditioned_model_inputs(
+            model_thin, T_test, X_int, active_condition
+        ))
+        C_C_int, _ = model_ext(conditioned_model_inputs(
+            model_ext, T_test, X_int, active_condition
+        ))
         J_rxn_mean = torch.mean(active_k * C_B_int * C_C_int).item()
         C_B_int_mean = torch.mean(C_B_int).item()
         C_C_int_mean = torch.mean(C_C_int).item()
@@ -5230,7 +5624,9 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
         err_AB_max = 0
         for t in T_cons:
             T_grid = torch.ones_like(X_cons) * t
-            inputs = torch.cat([T_grid, X_cons], dim=1)
+            inputs = conditioned_model_inputs(
+                model_thin, T_grid, X_cons, active_condition
+            )
             C_A_test, C_B_test = model_thin(inputs)
             err = torch.abs(C_A_test + C_B_test - 1.0).max().item()
             err_AB_max = max(err_AB_max, err)
@@ -5240,9 +5636,11 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
         err_CD_max = 0
         for t in T_cons:
             T_grid = torch.ones_like(X_cons_ext) * t
-            inputs = torch.cat([T_grid, X_cons_ext], dim=1)
+            inputs = conditioned_model_inputs(
+                model_ext, T_grid, X_cons_ext, active_condition
+            )
             C_C_test, C_D_test = model_ext(inputs)
-            err = torch.abs(C_C_test + C_D_test - gamma).max().item()
+            err = torch.abs(C_C_test + C_D_test - active_gamma).max().item()
             err_CD_max = max(err_CD_max, err)
 
         interface_state = getattr(model_ext, "interface_state", None)
@@ -5264,7 +5662,9 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
     X_surf = torch.zeros_like(T_surf)
     X_surf.requires_grad_(True)
 
-    C_A_surf, _ = model_thin(torch.cat([T_surf, X_surf], dim=1))
+    C_A_surf, _ = model_thin(conditioned_model_inputs(
+        model_thin, T_surf, X_surf, active_condition
+    ))
     C_A_X_surf = torch.autograd.grad(
         C_A_surf.sum(), X_surf, 
         create_graph=False, retain_graph=False
@@ -5314,19 +5714,20 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
 
 
 # ==================== v9.6 训练函数 - 界面耦合增强 ====================
-def concentration_bounds_loss(C_A, C_B, C_C, C_D):
+def concentration_bounds_loss(C_A, C_B, C_C, C_D, gamma_value=None):
+    gamma_value = gamma if gamma_value is None else float(gamma_value)
     thin_loss = (
         torch.mean(torch.relu(-C_A) ** 2) +
         torch.mean(torch.relu(C_A - 1.0) ** 2) +
         torch.mean(torch.relu(-C_B) ** 2) +
         torch.mean(torch.relu(C_B - 1.0) ** 2)
     )
-    ext_scale = external_residual_scale()
+    ext_scale = external_residual_scale(gamma_value)
     ext_loss = (
         torch.mean((ext_scale * torch.relu(-C_C)) ** 2) +
-        torch.mean((ext_scale * torch.relu(C_C - gamma)) ** 2) +
+        torch.mean((ext_scale * torch.relu(C_C - gamma_value)) ** 2) +
         torch.mean((ext_scale * torch.relu(-C_D)) ** 2) +
-        torch.mean((ext_scale * torch.relu(C_D - gamma)) ** 2)
+        torch.mean((ext_scale * torch.relu(C_D - gamma_value)) ** 2)
     )
     return thin_loss + ext_loss
 
@@ -5344,6 +5745,7 @@ def fixed_physics_validation_score(
     ext_interface_weight,
     n_points=96,
     k_value=None,
+    gamma_value=None,
     current_balance_weight=0.0,
 ):
     """Deterministic, FDM-free physics score for checkpointing and early stop."""
@@ -5351,16 +5753,23 @@ def fixed_physics_validation_score(
     thin_was_training = model_thin.training
     ext_was_training = model_ext.training
     previous_k = model_active_k_cat(model_ext=model_ext, model_thin=model_thin)
+    previous_gamma = model_active_gamma(model_ext=model_ext, model_thin=model_thin)
     if k_value is not None:
         set_model_k_cat(model_thin, model_ext, k_value)
+    if gamma_value is not None:
+        set_model_gamma(model_thin, model_ext, gamma_value)
     model_thin.eval()
     model_ext.eval()
     if hasattr(model_ext, "clear_step_cache"):
         model_ext.clear_step_cache()
 
-    ext_scale = external_residual_scale()
     active_k = model_active_k_cat(model_ext=model_ext, model_thin=model_thin)
-    flux_scale = flux_residual_scale(k_cat_value=active_k)
+    active_gamma = model_active_gamma(model_ext=model_ext, model_thin=model_thin)
+    active_condition = active_gamma if is_gamma_parameterized(
+        model_ext=model_ext, model_thin=model_thin
+    ) else active_k
+    ext_scale = external_residual_scale(active_gamma)
+    flux_scale = flux_residual_scale(active_gamma, active_k)
     is_flux_state = hasattr(model_ext, "flux_d")
     is_mixed_thin = bool(getattr(model_thin, "mixed_flux_thin", False))
 
@@ -5376,7 +5785,7 @@ def fixed_physics_validation_score(
     try:
         with torch.enable_grad():
             T_thin, X_thin = fixed_pair(0.0, delta, 37)
-            thin_inputs = conditioned_model_inputs(model_thin, T_thin, X_thin, active_k)
+            thin_inputs = conditioned_model_inputs(model_thin, T_thin, X_thin, active_condition)
             C_A, C_B = model_thin(thin_inputs)
             C_B_T = torch.autograd.grad(C_B.sum(), T_thin, create_graph=True, retain_graph=True)[0]
             C_B_X = torch.autograd.grad(C_B.sum(), X_thin, create_graph=True, retain_graph=True)[0]
@@ -5398,7 +5807,7 @@ def fixed_physics_validation_score(
                 loss_thin_conservation = torch.zeros((), device=device)
                 loss_thin_constitutive = torch.zeros((), device=device)
 
-            j_ref = characteristic_reaction_flux(gamma, active_k)
+            j_ref = characteristic_reaction_flux(active_gamma, active_k)
             loss_current_balance = torch.zeros((), device=device)
             diagnose_current_balance = bool(
                 current_balance_weight > 0.0 or
@@ -5416,7 +5825,7 @@ def fixed_physics_validation_score(
                 )
 
             T_ext, X_ext = fixed_pair(delta, X_ext_max, 53)
-            ext_inputs = conditioned_model_inputs(model_ext, T_ext, X_ext, active_k)
+            ext_inputs = conditioned_model_inputs(model_ext, T_ext, X_ext, active_condition)
             C_C, C_D = model_ext(ext_inputs)
             if hasattr(model_ext, "pde_fields"):
                 C_C_pde, C_D_pde = model_ext.pde_fields(ext_inputs)
@@ -5440,7 +5849,7 @@ def fixed_physics_validation_score(
             T_state = torch.linspace(0.0, float(T_sim), n_points, device=device).reshape(-1, 1)
             X_surface = torch.zeros_like(T_state)
             C_A_surface, C_B_surface = model_thin(
-                conditioned_model_inputs(model_thin, T_state, X_surface, active_k)
+                conditioned_model_inputs(model_thin, T_state, X_surface, active_condition)
             )
             theta_state = potential_theta(T_state)
             C_A_eq = torch.sigmoid(theta_state)
@@ -5451,10 +5860,10 @@ def fixed_physics_validation_score(
 
             X_far = torch.ones_like(T_state) * X_ext_max
             C_C_far, C_D_far = model_ext(
-                conditioned_model_inputs(model_ext, T_state, X_far, active_k)
+                conditioned_model_inputs(model_ext, T_state, X_far, active_condition)
             )
             loss_farfield = (
-                torch.mean((ext_scale * (C_C_far - gamma)) ** 2) +
+                torch.mean((ext_scale * (C_C_far - active_gamma)) ** 2) +
                 torch.mean((ext_scale * C_D_far) ** 2)
             )
 
@@ -5462,30 +5871,32 @@ def fixed_physics_validation_score(
             X_ini_ext = torch.linspace(float(delta), float(X_ext_max), n_points, device=device).reshape(-1, 1)
             T_ini = torch.zeros_like(X_ini_thin)
             C_A_ini, C_B_ini = model_thin(
-                conditioned_model_inputs(model_thin, T_ini, X_ini_thin, active_k)
+                conditioned_model_inputs(model_thin, T_ini, X_ini_thin, active_condition)
             )
             C_C_ini, C_D_ini = model_ext(
-                conditioned_model_inputs(model_ext, T_ini, X_ini_ext, active_k)
+                conditioned_model_inputs(model_ext, T_ini, X_ini_ext, active_condition)
             )
             loss_initial = (
                 torch.mean((C_A_ini - 1.0) ** 2) + torch.mean(C_B_ini ** 2) +
-                torch.mean((ext_scale * (C_C_ini - gamma)) ** 2) +
+                torch.mean((ext_scale * (C_C_ini - active_gamma)) ** 2) +
                 torch.mean((ext_scale * C_D_ini) ** 2)
             )
-            loss_bounds = concentration_bounds_loss(C_A, C_B, C_C, C_D)
+            loss_bounds = concentration_bounds_loss(
+                C_A, C_B, C_C, C_D, gamma_value=active_gamma
+            )
 
             index = torch.arange(n_points, device=device, dtype=torch.float32)
             T_int = (((index + 0.5) / n_points) * T_sim).reshape(-1, 1)
             X_int_thin = torch.ones_like(T_int, requires_grad=True) * delta
             C_A_int, C_B_int = model_thin(
-                conditioned_model_inputs(model_thin, T_int, X_int_thin, active_k)
+                conditioned_model_inputs(model_thin, T_int, X_int_thin, active_condition)
             )
             C_A_X_int = torch.autograd.grad(C_A_int.sum(), X_int_thin, create_graph=True, retain_graph=True)[0]
             C_B_X_int = torch.autograd.grad(C_B_int.sum(), X_int_thin, create_graph=True)[0]
 
             X_int_ext = torch.ones_like(T_int, requires_grad=True) * delta
             C_C_int, C_D_int = model_ext(
-                conditioned_model_inputs(model_ext, T_int, X_int_ext, active_k)
+                conditioned_model_inputs(model_ext, T_int, X_int_ext, active_condition)
             )
             J_rxn = active_k * C_B_int * C_C_int
             loss_interface_thin = (
@@ -5495,12 +5906,12 @@ def fixed_physics_validation_score(
 
             if getattr(model_ext, "tracegreen_external", False):
                 loss_interface_ext = torch.mean(
-                    (ext_scale * (C_C_int + C_D_int - gamma)) ** 2
+                    (ext_scale * (C_C_int + C_D_int - active_gamma)) ** 2
                 )
             elif getattr(model_ext, "fluxtrace_analytic_boundary_flux", False):
                 trace_loss = model_ext.fluxtrace_trace_consistency_loss(T_int)
                 loss_interface_ext = (
-                    torch.mean((ext_scale * (C_C_int + C_D_int - gamma)) ** 2) +
+                    torch.mean((ext_scale * (C_C_int + C_D_int - active_gamma)) ** 2) +
                     float(getattr(model_ext, "fluxtrace_trace_weight", 1.0)) * trace_loss
                 )
             else:
@@ -5519,10 +5930,10 @@ def fixed_physics_validation_score(
                 T_minus = torch.ones_like(X_rev) * (T_switch * T_sim - eps_t)
                 T_plus = torch.ones_like(X_rev) * (T_switch * T_sim + eps_t)
                 C_C_minus, C_D_minus = model_ext(
-                    conditioned_model_inputs(model_ext, T_minus, X_rev, active_k)
+                    conditioned_model_inputs(model_ext, T_minus, X_rev, active_condition)
                 )
                 C_C_plus, C_D_plus = model_ext(
-                    conditioned_model_inputs(model_ext, T_plus, X_rev, active_k)
+                    conditioned_model_inputs(model_ext, T_plus, X_rev, active_condition)
                 )
                 loss_reversal = torch.mean(
                     (C_C_plus - C_C_minus) ** 2 + (C_D_plus - C_D_minus) ** 2
@@ -5547,9 +5958,15 @@ def fixed_physics_validation_score(
                     product_integral_valid = bool(
                         product_integral_diag["all_finite"].detach().cpu()
                     ) and (
-                        product_integral_bounds_max <= 1e-6 * gamma
+                        product_integral_bounds_max <= 1e-6 * (
+                            1.0 if getattr(interface_state, "normalized_gamma_product_integral", False)
+                            else active_gamma
+                        )
                     ) and (
-                        product_integral_closure_max <= 1e-5 * gamma
+                        product_integral_closure_max <= 1e-5 * (
+                            1.0 if getattr(interface_state, "normalized_gamma_product_integral", False)
+                            else active_gamma
+                        )
                     )
 
             score = (
@@ -5567,6 +5984,7 @@ def fixed_physics_validation_score(
             components = {
                 "score": float(score.detach().cpu()),
                 "k_cat": active_k,
+                "gamma": active_gamma,
                 "pde_thin": float(loss_pde_thin.detach().cpu()),
                 "pde_ext": float(loss_pde_ext.detach().cpu()),
                 "surface": float(loss_surface.detach().cpu()),
@@ -5591,6 +6009,8 @@ def fixed_physics_validation_score(
             model_ext.clear_step_cache()
         if k_value is not None:
             set_model_k_cat(model_thin, model_ext, previous_k)
+        if gamma_value is not None:
+            set_model_gamma(model_thin, model_ext, previous_gamma)
         model_thin.train(thin_was_training)
         model_ext.train(ext_was_training)
 
@@ -5642,6 +6062,50 @@ def parameterized_physics_validation_score(
     return result
 
 
+def gamma_parameterized_physics_validation_score(
+    model_thin,
+    model_ext,
+    device,
+    gamma_values=GAMMAPARAM_VALIDATION_VALUES,
+    **kwargs,
+):
+    per_gamma = {}
+    for value in gamma_values:
+        result = fixed_physics_validation_score(
+            model_thin,
+            model_ext,
+            device,
+            gamma_value=float(value),
+            **kwargs,
+        )
+        if not result.get("product_integral_valid", True):
+            raise FloatingPointError(
+                "Invalid product-integral trace during gamma validation: "
+                f"gamma={float(value):g}, bounds={result['product_integral_bounds_max']:.3e}, "
+                f"closure={result['product_integral_closure_max']:.3e}"
+            )
+        per_gamma[f"{float(value):g}"] = result
+
+    scores = np.asarray([entry["score"] for entry in per_gamma.values()], dtype=float)
+    result = {
+        "score": 0.5 * float(np.mean(scores)) + 0.5 * float(np.max(scores)),
+        "score_mean": float(np.mean(scores)),
+        "score_worst": float(np.max(scores)),
+        "per_gamma": per_gamma,
+        "product_integral_valid": True,
+    }
+    component_names = [
+        "pde_thin", "pde_ext", "surface", "farfield", "initial",
+        "bounds", "interface_thin", "interface_ext", "reversal",
+        "current_balance", "current_balance_rmse", "thin_conservation",
+        "thin_constitutive", "product_integral_bounds_max",
+        "product_integral_closure_max",
+    ]
+    for name in component_names:
+        result[name] = float(np.mean([entry[name] for entry in per_gamma.values()]))
+    return result
+
+
 def run_fdm_posterior_compare(model_thin, model_ext, epoch, arch_name, fdm_pkl,
                               output_dir=None, n_time=160, n_x_in=120, n_x_out=160,
                               batch_size=65536, save_figure=False, save_fields=False):
@@ -5683,7 +6147,7 @@ def run_fdm_posterior_compare(model_thin, model_ext, epoch, arch_name, fdm_pkl,
         sys.executable, "-u", script_path,
         "--fdm-pkl", fdm_pkl,
         "--arch", arch_name,
-        "--gamma", str(gamma),
+        "--gamma", str(model_active_gamma(model_ext=model_ext, model_thin=model_thin)),
         "--input-mode", "normalized" if USE_NORMALIZED_COORDS else "legacy",
         "--checkpoint", eval_checkpoint,
         "--n-time", str(n_time),
@@ -5773,6 +6237,14 @@ def sample_kparam_value(
     raise FloatingPointError("Could not sample a finite positive k_cat")
 
 
+def sample_gammaparam_value(anchor_probability=0.6):
+    """Sample one shared gamma for a complete causal optimizer step."""
+    if np.random.random() < float(np.clip(anchor_probability, 0.0, 1.0)):
+        return float(np.random.choice(GAMMAPARAM_ANCHORS))
+    log_min, log_max = np.log10(GAMMAPARAM_CALIBRATION_RANGE)
+    return float(10.0 ** np.random.uniform(log_min, log_max))
+
+
 def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resume=False,
                      early_stop=True, resume_checkpoint=None, resume_best=False,
                      save_every=2000, thin_interface_weight=None, ext_interface_weight=200.0,
@@ -5799,6 +6271,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                      kparam_anchor_probability=0.5,
                      kparam_log10_std=KPARAM_LOG10_STD,
                      kparam_freeze_backbone_epochs=1000,
+                     gammaparam_anchor_probability=0.6,
+                     gammaparam_freeze_backbone=True,
                      current_balance_weight=None,
                      current_balance_ramp_epochs=100,
                      current_balance_samples=256):
@@ -5806,6 +6280,11 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         raise ValueError(
             "multiscale_film_tracegreen_kparam_lift is posterior-only; "
             "train multiscale_film_tracegreen_kparam and apply the lift at evaluation"
+        )
+    if getattr(model_thin, "gammaparam_posterior_lift", False):
+        raise ValueError(
+            "multiscale_film_tracegreen_gammaparam_lift is posterior-only; "
+            "train multiscale_film_tracegreen_gammaparam and apply the lift at evaluation"
         )
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
@@ -5820,6 +6299,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 params.append(param)
                 seen_params.add(id(param))
     is_kparam = is_k_parameterized(model_ext=model_ext, model_thin=model_thin)
+    is_gammaparam = is_gamma_parameterized(model_ext=model_ext, model_thin=model_thin)
     is_conservative_thin = bool(getattr(model_thin, "conservative_thin_current", False))
     is_mixed_thin = bool(getattr(model_thin, "mixed_flux_thin", False))
     is_inventory_lift = bool(getattr(model_thin, "inventory_hermite_lift", False))
@@ -5833,20 +6313,27 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     current_balance_ramp_epochs = max(0, int(current_balance_ramp_epochs))
     current_balance_samples = max(32, int(current_balance_samples))
     original_requires_grad = {id(param): param.requires_grad for param in params}
+    adapter_module = (
+        getattr(model_thin, "k_adapter", None)
+        if is_kparam else getattr(model_thin, "gamma_adapter", None)
+    )
     adapter_param_ids = {
-        id(param)
-        for param in getattr(model_thin, "k_adapter", nn.Identity()).parameters()
+        id(param) for param in (adapter_module or nn.Identity()).parameters()
     }
     backbone_frozen = False
     if is_kparam and int(kparam_freeze_backbone_epochs) > 0:
         for param in params:
             param.requires_grad_(id(param) in adapter_param_ids)
         backbone_frozen = True
-    if is_kparam:
+    if is_gammaparam and bool(gammaparam_freeze_backbone):
+        for param in params:
+            param.requires_grad_(id(param) in adapter_param_ids)
+        backbone_frozen = True
+    if is_kparam or is_gammaparam:
         adapter_params = [param for param in params if id(param) in adapter_param_ids]
         backbone_params = [param for param in params if id(param) not in adapter_param_ids]
         if not adapter_params:
-            raise RuntimeError("kparam architecture is missing its conditional adapter")
+            raise RuntimeError("Parameterized architecture is missing its conditional adapter")
         optimizer = torch.optim.AdamW(
             [
                 {"params": adapter_params, "lr": learning_rate},
@@ -5895,7 +6382,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         'cint_temporal_smooth': [], 'lr': [], 'nernst_err': [],
         'surface_state': [], 'physics_score': [],
         'physics_validation_score': [], 'physics_validation_ema': [],
-        'physics_validation_epoch': [], 'k_cat': [],
+        'physics_validation_epoch': [], 'k_cat': [], 'gamma': [],
         'current_balance': [], 'current_balance_weight': [],
         'thin_conservation': [], 'thin_constitutive': []
     }
@@ -5930,6 +6417,17 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             "k_log10_normal_std": kparam_log10_std,
             "k_validation_values": list(KPARAM_VALIDATION_VALUES),
             "k_freeze_backbone_epochs": kparam_freeze_backbone_epochs,
+        }
+    if is_gammaparam:
+        gammaparam_anchor_probability = float(np.clip(
+            gammaparam_anchor_probability, 0.0, 1.0
+        ))
+        model_ext.gamma_sampling_metadata = {
+            "gamma_anchor_values": list(GAMMAPARAM_ANCHORS),
+            "gamma_anchor_probability": gammaparam_anchor_probability,
+            "gamma_continuous_distribution": "log10_uniform[-1,2]",
+            "gamma_validation_values": list(GAMMAPARAM_VALIDATION_VALUES),
+            "gamma_backbone_frozen": bool(gammaparam_freeze_backbone),
         }
     if int(early_stop_min_epochs) < 0:
         if getattr(model_ext, "film_trace_clean_external", False):
@@ -6240,6 +6738,13 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             set_model_k_cat(model_thin, model_ext, step_k)
         else:
             step_k = float(k_cat_star)
+        if is_gammaparam:
+            step_gamma = sample_gammaparam_value(gammaparam_anchor_probability)
+            set_model_gamma(model_thin, model_ext, step_gamma)
+            step_condition = step_gamma
+        else:
+            step_gamma = float(gamma)
+            step_condition = step_k
         if hasattr(model_ext, "clear_step_cache"):
             model_ext.clear_step_cache()
 
@@ -6277,7 +6782,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         # ========== 3. Loss computation ==========
 
         # 3.1 Thin layer PDE
-        inputs_thin = conditioned_model_inputs(model_thin, T_thin, X_thin, step_k)
+        inputs_thin = conditioned_model_inputs(model_thin, T_thin, X_thin, step_condition)
         C_A, C_B = model_thin(inputs_thin)
 
         C_B_T = torch.autograd.grad(C_B.sum(), T_thin, create_graph=True)[0]
@@ -6313,20 +6818,20 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 quadrature_points=16,
                 create_graph=True,
             )
-            j_ref = characteristic_reaction_flux(gamma, step_k)
+            j_ref = characteristic_reaction_flux(step_gamma, step_k)
             loss_current_balance = torch.mean(
                 (current["balance_residual"] / max(j_ref, 1e-8)) ** 2
             )
 
         # 3.2 External PDE
-        inputs_ext = conditioned_model_inputs(model_ext, T_ext, X_ext, step_k)
+        inputs_ext = conditioned_model_inputs(model_ext, T_ext, X_ext, step_condition)
         C_C, C_D = model_ext(inputs_ext)
         if hasattr(model_ext, "pde_fields"):
             C_C_pde, C_D_pde = model_ext.pde_fields(inputs_ext)
         else:
             C_C_pde, C_D_pde = C_C, C_D
 
-        ext_scale = external_residual_scale()
+        ext_scale = external_residual_scale(step_gamma)
 
         if is_flux_state:
             C_D_T = torch.autograd.grad(C_D_pde.sum(), T_ext, create_graph=True)[0]
@@ -6356,7 +6861,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         perm = torch.randperm(n_surface)
         X_surf = X_surf[perm]
 
-        inputs_surf = conditioned_model_inputs(model_thin, T_surf, X_surf, step_k)
+        inputs_surf = conditioned_model_inputs(model_thin, T_surf, X_surf, step_condition)
         C_A_surf, C_B_surf = model_thin(inputs_surf)
         theta_surf = potential_theta(T_surf)
 
@@ -6372,7 +6877,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
 
         T_exact = torch.rand(n_surface // 3, 1, device=device) * T_sim
         X_exact = torch.zeros_like(T_exact)
-        inputs_exact = conditioned_model_inputs(model_thin, T_exact, X_exact, step_k)
+        inputs_exact = conditioned_model_inputs(model_thin, T_exact, X_exact, step_condition)
         C_A_exact, C_B_exact = model_thin(inputs_exact)
         theta_exact = potential_theta(T_exact)
         C_A_eq = torch.sigmoid(theta_exact)
@@ -6395,11 +6900,11 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         # 3.4 Far-field
         T_far = torch.rand(n_farfield, 1, device=device) * T_sim
         X_far = torch.ones_like(T_far) * X_ext_max
-        inputs_far = conditioned_model_inputs(model_ext, T_far, X_far, step_k)
+        inputs_far = conditioned_model_inputs(model_ext, T_far, X_far, step_condition)
         C_C_far, C_D_far = model_ext(inputs_far)
 
         loss_farfield = (
-            torch.mean((ext_scale * (C_C_far - gamma))**2) +
+            torch.mean((ext_scale * (C_C_far - step_gamma))**2) +
             torch.mean((ext_scale * C_D_far)**2)
         )
 
@@ -6409,28 +6914,30 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         X_ini_ext = delta + torch.rand(n_points // 5, 1, device=device) * (X_ext_max - delta)
 
         C_A_ini, C_B_ini = model_thin(
-            conditioned_model_inputs(model_thin, T_ini, X_ini_thin, step_k)
+            conditioned_model_inputs(model_thin, T_ini, X_ini_thin, step_condition)
         )
         C_C_ini, C_D_ini = model_ext(
-            conditioned_model_inputs(model_ext, T_ini, X_ini_ext, step_k)
+            conditioned_model_inputs(model_ext, T_ini, X_ini_ext, step_condition)
         )
 
         T_ini_int = torch.zeros(n_points // 10, 1, device=device)
         X_ini_int = torch.ones_like(T_ini_int) * delta
         C_C_ini_int, C_D_ini_int = model_ext(
-            conditioned_model_inputs(model_ext, T_ini_int, X_ini_int, step_k)
+            conditioned_model_inputs(model_ext, T_ini_int, X_ini_int, step_condition)
         )
 
         loss_initial = (
             torch.mean((C_A_ini - 1.0)**2) +
             torch.mean(C_B_ini**2) +
-            torch.mean((ext_scale * (C_C_ini - gamma))**2) +
+            torch.mean((ext_scale * (C_C_ini - step_gamma))**2) +
             torch.mean((ext_scale * C_D_ini)**2) +
-            2.0 * torch.mean((ext_scale * (C_C_ini_int - gamma))**2) +
+            2.0 * torch.mean((ext_scale * (C_C_ini_int - step_gamma))**2) +
             2.0 * torch.mean((ext_scale * C_D_ini_int)**2)
         )
 
-        loss_bounds = concentration_bounds_loss(C_A, C_B, C_C, C_D)
+        loss_bounds = concentration_bounds_loss(
+            C_A, C_B, C_C, C_D, gamma_value=step_gamma
+        )
 
         # 3.6 Interface coupling - v9.6: 保持 v9.5 符号不变
         # 经分析，v9.5 的符号与 FDM 等价，只是定义不同
@@ -6438,21 +6945,21 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
 
         X_int_thin = torch.ones_like(T_int) * delta
         X_int_thin.requires_grad_(True)
-        inputs_int_thin = conditioned_model_inputs(model_thin, T_int, X_int_thin, step_k)
+        inputs_int_thin = conditioned_model_inputs(model_thin, T_int, X_int_thin, step_condition)
         C_A_int, C_B_int = model_thin(inputs_int_thin)
         C_A_X_int = torch.autograd.grad(C_A_int.sum(), X_int_thin, create_graph=True, retain_graph=True)[0]
         C_B_X_int = torch.autograd.grad(C_B_int.sum(), X_int_thin, create_graph=True, retain_graph=True)[0]
 
         X_int_ext = torch.ones_like(T_int) * delta
         X_int_ext.requires_grad_(True)
-        inputs_int_ext = conditioned_model_inputs(model_ext, T_int, X_int_ext, step_k)
+        inputs_int_ext = conditioned_model_inputs(model_ext, T_int, X_int_ext, step_condition)
         C_C_int, C_D_int = model_ext(inputs_int_ext)
         C_C_X_int = torch.autograd.grad(C_C_int.sum(), X_int_ext, create_graph=True, retain_graph=True)[0]
         C_D_X_int = torch.autograd.grad(C_D_int.sum(), X_int_ext, create_graph=True, retain_graph=True)[0]
 
         active_k = model_active_k_cat(model_ext=model_ext, model_thin=model_thin)
         J_rxn = active_k * C_B_int * C_C_int
-        flux_scale = flux_residual_scale(k_cat_value=active_k)
+        flux_scale = flux_residual_scale(step_gamma, active_k)
 
         # 保持 v9.5 的通量符号（经分析正确）
         flux_A_res = flux_scale * (-D_rel_A * C_A_X_int + J_rxn)
@@ -6463,7 +6970,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         loss_interface_thin = torch.mean(flux_A_res**2) + torch.mean(flux_B_res**2)
         if getattr(model_ext, "tracegreen_external", False):
             loss_interface_ext = torch.mean(
-                (ext_scale * (C_C_int + C_D_int - gamma)) ** 2
+                (ext_scale * (C_C_int + C_D_int - step_gamma)) ** 2
             )
         elif getattr(model_ext, "fluxtrace_analytic_boundary_flux", False):
             # The flux Green term satisfies the boundary flux in analytic trace
@@ -6472,7 +6979,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             # would incorrectly force a Hermite slope correction back in.
             trace_loss = model_ext.fluxtrace_trace_consistency_loss(T_int)
             loss_interface_ext = (
-                torch.mean((ext_scale * (C_C_int + C_D_int - gamma)) ** 2) +
+                torch.mean((ext_scale * (C_C_int + C_D_int - step_gamma)) ** 2) +
                 float(getattr(model_ext, "fluxtrace_trace_weight", 1.0)) * trace_loss
             )
         else:
@@ -6494,10 +7001,10 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             T_minus = torch.ones_like(X_cont) * (T_switch * T_sim - eps_t)
             T_plus = torch.ones_like(X_cont) * (T_switch * T_sim + eps_t)
             C_C_minus, C_D_minus = model_ext(
-                conditioned_model_inputs(model_ext, T_minus, X_cont, step_k)
+                conditioned_model_inputs(model_ext, T_minus, X_cont, step_condition)
             )
             C_C_plus, C_D_plus = model_ext(
-                conditioned_model_inputs(model_ext, T_plus, X_cont, step_k)
+                conditioned_model_inputs(model_ext, T_plus, X_cont, step_condition)
             )
             loss_reversal_continuity = torch.mean(
                 (C_C_plus - C_C_minus) ** 2 +
@@ -6740,6 +7247,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         loss_history['surface_state'].append(loss_surface_state.item())
         loss_history.setdefault('physics_score', []).append(physics_score.item())
         loss_history.setdefault('k_cat', []).append(active_k)
+        loss_history.setdefault('gamma', []).append(step_gamma)
         loss_history.setdefault('current_balance', []).append(loss_current_balance.item())
         loss_history.setdefault('current_balance_weight', []).append(active_current_balance_weight)
         loss_history.setdefault('thin_conservation', []).append(loss_thin_conservation.item())
@@ -6754,8 +7262,11 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         # from checkpoint selection and stopping to avoid posterior data leakage.
         if completed_step % early_stop_check_every == 0:
             validation_fn = (
-                parameterized_physics_validation_score
-                if is_kparam else fixed_physics_validation_score
+                gamma_parameterized_physics_validation_score
+                if is_gammaparam else (
+                    parameterized_physics_validation_score
+                    if is_kparam else fixed_physics_validation_score
+                )
             )
             validation = validation_fn(
                 model_thin,
@@ -6786,6 +7297,10 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             if is_kparam:
                 loss_history.setdefault('physics_validation_per_k', []).append(
                     {key: value['score'] for key, value in validation['per_k'].items()}
+                )
+            if is_gammaparam:
+                loss_history.setdefault('physics_validation_per_gamma', []).append(
+                    {key: value['score'] for key, value in validation['per_gamma'].items()}
                 )
 
             required_score = best_score * (1.0 - early_stop_min_relative_improvement)
@@ -6878,6 +7393,11 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                     f" | k={active_k:.6g}"
                     f" | J_ref={characteristic_reaction_flux(k_cat_value=active_k):.4g}"
                 )
+            if is_gammaparam:
+                phase_msg += (
+                    f" | gamma={step_gamma:.6g}"
+                    f" | J_ref={characteristic_reaction_flux(step_gamma, active_k):.4g}"
+                )
             print(
                 f"[progress] epoch {epoch + 1}/{start_epoch + n_epochs} "
                 f"({step_count}/{n_epochs}) | loss={total_loss.item():.3e} "
@@ -6914,7 +7434,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
 
                 X_test_ext = delta + torch.rand(100, 1, device=device) * (X_ext_max - delta)
                 C_C_test, C_D_test = model_ext(torch.cat([T_test, X_test_ext], dim=1))
-                err_CD = torch.abs(C_C_test + C_D_test - gamma).max().item()
+                err_CD = torch.abs(C_C_test + C_D_test - step_gamma).max().item()
 
                 T_surf_test = torch.rand(50, 1, device=device) * T_sim
                 X_surf_test = torch.zeros_like(T_surf_test)
@@ -7021,8 +7541,11 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     # Still create a physically selected best checkpoint for downstream stages.
     if not np.isfinite(best_score):
         validation_fn = (
-            parameterized_physics_validation_score
-            if is_kparam else fixed_physics_validation_score
+            gamma_parameterized_physics_validation_score
+            if is_gammaparam else (
+                parameterized_physics_validation_score
+                if is_kparam else fixed_physics_validation_score
+            )
         )
         validation = validation_fn(
             model_thin,
@@ -7047,6 +7570,10 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         if is_kparam:
             loss_history.setdefault('physics_validation_per_k', []).append(
                 {key: value['score'] for key, value in validation['per_k'].items()}
+            )
+        if is_gammaparam:
+            loss_history.setdefault('physics_validation_per_gamma', []).append(
+                {key: value['score'] for key, value in validation['per_gamma'].items()}
             )
         save_model_v96(
             model_thin,
@@ -7483,7 +8010,7 @@ if __name__ == "__main__":
     parser.add_argument("--resume-checkpoint", default=None,
                         help="Explicit checkpoint path to resume training from.")
     parser.add_argument("--warm-start-checkpoint", default=None,
-                        help="Load model weights only; required when seeding kparam from fixed k=1 clean.")
+                        help="Load model weights only; seeds a parameterized model from its fixed reference checkpoint.")
     parser.add_argument("--checkpoint-dir", default=None,
                         help="Directory for current/best checkpoints, e.g. a Google Drive folder on Colab.")
     parser.add_argument("--save-every", type=int, default=2000,
@@ -7497,7 +8024,7 @@ if __name__ == "__main__":
                         help="Fixed bulk C concentration ratio for this run.")
     parser.add_argument("--k-cat-star", type=float, default=REFERENCE_K_CAT_STAR,
                         help="Fixed catalytic reaction constant for this run.")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_productintegral", "multiscale_film_tracegreen_productintegral_lift", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_conservative_lift", "multiscale_film_tracegreen_kparam", "multiscale_film_tracegreen_kparam_lift", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_productintegral", "multiscale_film_tracegreen_productintegral_lift", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_conservative_lift", "multiscale_film_tracegreen_kparam", "multiscale_film_tracegreen_kparam_lift", "multiscale_film_tracegreen_gammaparam", "multiscale_film_tracegreen_gammaparam_lift", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256,
                         help="Global history time-grid size for multiscale_green_grid.")
     parser.add_argument("--green-kernel-points", type=int, default=32,
@@ -7586,6 +8113,10 @@ if __name__ == "__main__":
                         help="Std.dev. of full-support Normal sampling in log10(k/k_ref).")
     parser.add_argument("--kparam-freeze-backbone-epochs", type=int, default=1000,
                         help="Added epochs that train only the zero-initialized k adapter.")
+    parser.add_argument("--gammaparam-anchor-probability", type=float, default=0.6,
+                        help="Probability of sampling gamma from {0.1,1,100}; otherwise log-uniform on [0.1,100].")
+    parser.add_argument("--gammaparam-unfreeze-backbone", action="store_true",
+                        help="Also train the gamma=10 backbone. Default keeps it frozen to protect the reference model.")
     parser.add_argument("--smoke-test", action="store_true",
                         help="Run a tiny forward/gradient/backward sanity check and exit.")
     args = parser.parse_args()
@@ -7618,6 +8149,8 @@ if __name__ == "__main__":
     model_ext = model_ext.to(device)
     if is_k_parameterized(model_ext=model_ext):
         set_model_k_cat(model_thin, model_ext, args.k_cat_star)
+    if is_gamma_parameterized(model_ext=model_ext):
+        set_model_gamma(model_thin, model_ext, args.gamma)
 
     total_params = (sum(p.numel() for p in model_thin.parameters()) + 
                    sum(p.numel() for p in model_ext.parameters()))
@@ -7745,6 +8278,8 @@ if __name__ == "__main__":
         kparam_anchor_probability=args.kparam_anchor_probability,
         kparam_log10_std=args.kparam_log10_std,
         kparam_freeze_backbone_epochs=args.kparam_freeze_backbone_epochs,
+        gammaparam_anchor_probability=args.gammaparam_anchor_probability,
+        gammaparam_freeze_backbone=not args.gammaparam_unfreeze_backbone,
         current_balance_weight=args.current_balance_weight,
         current_balance_ramp_epochs=args.current_balance_ramp_epochs,
         current_balance_samples=args.current_balance_samples,
