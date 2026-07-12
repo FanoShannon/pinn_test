@@ -610,28 +610,74 @@ Parameter-scale consistency in this branch:
 
 ### k_cat parameter generalization
 
-`multiscale_film_tracegreen_kparam` generalizes only `k_cat` over `[0.1,10]`;
-`gamma=10` and `delta=0.035` remain fixed.  One scalar `k_cat` is sampled per
-optimizer step, so the Film-Abel history and every collocation point in that
-step share one physical problem.  The first stage samples the anchors
-`{0.1,1,10}` with probabilities `{0.25,0.50,0.25}`.  The second stage mixes at
-least 50% anchor samples with log-uniform continuous samples.
+`multiscale_film_tracegreen_kparam` generalizes only `k_cat` over all finite
+positive values; `gamma=10` and `delta=0.035` remain fixed.  Its interface is the
+piecewise-linear ProductIntegral operator above, so the active `k_cat` enters
+both the film reaction and the implicit singular-cell Newton closure.  One
+scalar `k_cat` is sampled per optimizer step, so the causal Volterra history and
+every collocation point in that step share one physical problem.  The network
+receives `[t,x,k_cat]`, with the bounded condition
+`tanh(log10(k_cat/k_reference))`; no `dC/dk_cat` PDE term is introduced.  The
+film calculation uses the exact local Damkohler fraction
+`Da/(1+Da)=sigmoid(log(Da))`, which has stable reaction-limited and
+transport-limited limits as `k_cat` approaches zero or infinity.
 
-The new path must warm-start from a parameter-scale-consistency clean `k=1`
-checkpoint; a fixed checkpoint cannot be resumed as if it already contained a
-parameterized optimizer state:
+The first stage samples the anchors
+`{0.1,1,10}` with probabilities `{0.25,0.50,0.25}`.  The second stage mixes at
+least 50% anchor samples with a normal distribution on `log10(k_cat)` (default
+standard deviation `1.25`).  This distribution has support on every finite
+positive `k_cat`; deterministic physics validation also checks
+`{0.01,0.1,1,10,100}`.  These support guarantees do not claim uniform numerical
+accuracy arbitrarily far into the tails, so posterior FDM cases should be added
+at the application-relevant extremes.
+
+The preferred warm start is the latest fixed
+`multiscale_film_tracegreen_productintegral` `k=1` checkpoint.  A fixed
+checkpoint cannot be resumed as if it already contained a parameterized
+optimizer state:
 
 ```bash
 %cd /content/gdrive/MyDrive/pinn_v96
-!WARM_START_CKPT=/content/gdrive/MyDrive/pinn_v96/path/to/clean_k1_best.pth \
+!WARM_START_CKPT=/content/gdrive/MyDrive/pinn_v96/path/to/productintegral_k1_best.pth \
   bash run_colab_film_tracegreen_kparam_256x64.sh
 ```
+
+Parameterized checkpoints record the ProductIntegral operator version and
+fixed-point/Newton iteration counts.  The fixed ProductIntegral baseline keeps
+one Newton projection, while kparam uses four unrolled projections so the
+stiff `k=100` validation case reaches the same closure tolerance.  Older
+Film-Abel or one-projection kparam checkpoints are rejected
+for resume instead of being silently interpreted with the new interface.
 
 Multi-case FDM comparison remains posterior-only.  The Colab script evaluates
 available anchor files plus the log-midpoint holdouts `0.316` and `3.162`, then
 writes per-case metrics and `k_parameter_summary.json` with mean and worst-case
-dimensionless errors.  A zero-shot physics audit can use the same comparison
+dimensionless errors.  Final comparison applies the high-resolution,
+posterior-only inventory Hermite lift; FDM remains excluded from every training
+loss.  A zero-shot physics audit can use the same comparison
 driver with `--zero-shot-fixed-reference` and a fixed clean checkpoint.
+The runner now applies the same inventory lift to zero-shot and trained
+posterior evaluations by default.  Set `EPOCHS=0` to evaluate the checkpoint in
+`WARM_START_CKPT` over all available FDM cases and exit without training; each
+case prints a progress line and the summary is stored under the selected
+`RUN_TAG/zero_shot_compare` directory.
+
+Generate the seven v4.2 posterior cases with the stable finite-volume profiles
+before training or evaluation:
+
+```bash
+%cd /content/gdrive/MyDrive/FDM
+!bash run_colab_fdm_k7_v42.sh
+```
+
+The seven case wrappers call the FDM repository's
+`run_fdm_kcat1_v42.py`.  Cases through `k=1` start at `n_t=8000`; `k=3.162`
+uses `12000/8/0.50`, `k=10` uses `16000/12/0.35`, and `k=100` uses the locally
+verified stable profile `32000/20/0.25`, where the last two numbers are Picard
+iterations and relaxation.  `validate_fdm_v42_case.py` rejects NaN/Inf,
+concentration-bound or conservation failures, and coarse flux/inventory
+diagnostics.  Failed lower-k profiles retry with the safer high-resolution
+profiles.  These FDM files are posterior references only.
 
 Physics-only early stopping is enabled by default.  It uses a fixed deterministic
 collocation set and never reads FDM data.  Every 100 epochs it evaluates the

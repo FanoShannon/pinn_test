@@ -485,7 +485,10 @@ def build_models(
             history_grad=green_history_grad,
             cache_history=False,
         )
-    elif arch == "multiscale_film_tracegreen_kparam":
+    elif arch in {
+        "multiscale_film_tracegreen_kparam",
+        "multiscale_film_tracegreen_kparam_lift",
+    }:
         if not np.isclose(pinn.gamma, pinn.REFERENCE_GAMMA, rtol=0.0, atol=1e-12):
             raise ValueError("multiscale_film_tracegreen_kparam requires gamma=10")
         interface_state = pinn.InterfaceStateNet_v9_6_FilmTraceKParam(
@@ -493,10 +496,18 @@ def build_models(
             time_grid_points=green_time_grid,
             kernel_points=green_kernel_points,
         )
-        model_thin = pinn.ThinLayerNet_v9_6_MultiscaleHermiteKParam(
-            interface_state=interface_state,
-            normalize_inputs=normalize_inputs,
+        thin_class = (
+            pinn.ThinLayerNet_v9_6_InventoryHermiteLiftKParam
+            if arch.endswith("_lift")
+            else pinn.ThinLayerNet_v9_6_MultiscaleHermiteKParam
         )
+        thin_kwargs = {
+            "interface_state": interface_state,
+            "normalize_inputs": normalize_inputs,
+        }
+        if arch.endswith("_lift"):
+            thin_kwargs["lift_time_grid_points"] = lift_time_grid
+        model_thin = thin_class(**thin_kwargs)
         model_ext = pinn.ExternalNet_v9_6_FilmTraceGreenKParam(
             pinn.gamma,
             interface_state=interface_state,
@@ -607,6 +618,12 @@ def select_indices(size, n_select):
 def predict_pair(model, t_eval, x_eval, device, batch_size):
     tt, xx = np.meshgrid(t_eval, x_eval, indexing="ij")
     points = np.column_stack([tt.ravel(), xx.ravel()]).astype("float32")
+    if getattr(model, "k_parameterized", False):
+        k_value = pinn.model_active_k_cat(model_thin=model, model_ext=model)
+        points = np.column_stack([
+            points,
+            np.full(len(points), k_value, dtype="float32"),
+        ])
     chunks = []
     model.eval()
     with torch.no_grad():
@@ -627,7 +644,8 @@ def predict_surface_current(model_thin, t_eval, device, batch_size):
         t_batch = torch.from_numpy(t_eval[start:start + batch_size].reshape(-1, 1).astype("float32")).to(device)
         x_batch = torch.zeros_like(t_batch, requires_grad=True)
         with torch.enable_grad():
-            c_a, _ = model_thin(torch.cat([t_batch, x_batch], dim=1))
+            inputs = pinn.conditioned_model_inputs(model_thin, t_batch, x_batch)
+            c_a, _ = model_thin(inputs)
             c_a_x = torch.autograd.grad(c_a.sum(), x_batch, create_graph=False)[0]
         chunks.append((-c_a_x).detach().cpu().numpy().reshape(-1))
     return np.concatenate(chunks)
@@ -1076,7 +1094,7 @@ def main():
                         help="Fixed k_cat*. Defaults to checkpoint metadata, then FDM metadata.")
     parser.add_argument("--zero-shot-fixed-reference", action="store_true",
                         help="Allow a fixed k=1 clean checkpoint to seed kparam evaluation without resume semantics.")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_productintegral", "multiscale_film_tracegreen_productintegral_lift", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_conservative_lift", "multiscale_film_tracegreen_kparam", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_productintegral", "multiscale_film_tracegreen_productintegral_lift", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_conservative_lift", "multiscale_film_tracegreen_kparam", "multiscale_film_tracegreen_kparam_lift", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256)
     parser.add_argument("--green-kernel-points", type=int, default=32)
     parser.add_argument("--lift-time-grid", type=int, default=1024)
