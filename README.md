@@ -925,3 +925,30 @@ this high-flux case so the causal lift resolves faster inventory transients.
 The script checks the FDM `gamma` and `k_cat` metadata before starting.  It
 writes Stage 1, Stage 2, zero-training Stage 3, and posterior
 direct-comparison artifacts into the selected `RUN_ROOT`.
+
+## Gamma-conditional ProductIntegral
+
+`multiscale_film_tracegreen_gammaparam` fixes `k_cat=1` and accepts one shared
+positive gamma per causal batch.  Its ProductIntegral closure solves the
+dimensionless interface inventory `d=C_D/gamma`; gamma remains a condition and
+does not add a `d/dgamma` PDE term.  The calibrated range is `0.1 <= gamma <=
+100`; other positive values are extrapolation.  The gamma=10 adapter gate is
+exactly zero, and the clean backbone is frozen by default.
+
+The runner always performs the fair zero-shot comparison with posterior
+inventory lift first.  `EPOCHS=0` stops there; a positive value trains the
+adapter and then repeats the same lifted posterior comparison.
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96_gamma_latest
+!WARM_START_CKPT="/content/gdrive/MyDrive/pinn_v96_parameter_scale_0711/runs_productintegral_gamma10_from_stage2/stage2_productintegral/checkpoints/pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_productintegral_best.pth" \
+  WORK_DIR="/content/gdrive/MyDrive/pinn_v96_gamma_latest" \
+  RUN_TAG="gamma_productintegral_run01" \
+  EPOCHS=0 \
+  bash ./run_colab_film_tracegreen_gammaparam_256x64.sh
+```
+
+Seven-case posterior summaries are written to
+`runs_film_tracegreen_gammaparam_256x64/<RUN_TAG>/zero_shot_compare/gamma_parameter_summary.json`
+and, after training, to the corresponding `posterior_compare` directory.  FDM
+files are read only by the comparison process and never enter a training loss.
