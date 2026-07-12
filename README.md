@@ -763,3 +763,67 @@ FDM is used only by the posterior comparison.  A local zero-training check at
 `gamma=1`, `k=1`, and a 1024-point causal lift grid produced surface-current
 RMSE `3.095e-3`, R2 `0.99991`, and surface-versus-conservative RMSE
 `3.82e-5`.
+
+## Conservative-Lift Three-Stage Sweep
+
+The inventory lift is intentionally a short third stage, rather than a
+replacement for the original clean Stage 1 or Stage 2:
+
+```text
+Stage 1: multiscale_green_grid_dynamic_stage1
+         Learn a stable concentration field from scratch.
+
+Stage 2: multiscale_film_tracegreen_clean
+         Learn the Film-Abel interface state and TraceGreen external field.
+
+Stage 3: multiscale_film_tracegreen_conservative_lift
+         Apply the causal Hermite inventory lift and fine-tune the thin PDE.
+```
+
+Stage 3 preserves the Stage 2 checkpoint as a separate posterior baseline.
+It does not use FDM in its loss, its early stopping, or its checkpoint choice.
+This separation avoids introducing the Film-Abel/TraceGreen transition and the
+surface-current lift in the same optimizer transition.
+
+Run one fixed-parameter experiment per gamma.  Do not reuse a gamma=10
+checkpoint for gamma=100.
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!WORK_DIR=/content/pinn_v96_conservative_lift_code \
+  RUN_ROOT=/content/gdrive/MyDrive/pinn_v96/runs_conservative_lift_gamma10 \
+  GAMMA=10.0 K_CAT_STAR=1.0 \
+  FDM_PKL=/content/gdrive/MyDrive/FDM_parameter_scale_0711/kcat1_v42_thin_layer_catalytic_v42.pkl \
+  FDM_COMPARE_EVERY=0 \
+  bash /content/pinn_v96_conservative_lift_code/run_colab_conservative_lift_three_stage_256x64.sh
+```
+
+For gamma=100, first produce an FDM reference with matching metadata.  The
+larger flux warrants a finer time discretization than the default reference:
+
+```bash
+%cd /content/gdrive/MyDrive/FDM_parameter_scale_0711
+!PYTHONIOENCODING=utf-8 python -u run_fdm_kcat1_v42.py \
+  --gamma 100.0 --k-cat 1.0 \
+  --n-x-in 400 --n-x-out 1000 --n-t 16000 \
+  --reaction-iterations 6 \
+  --output-prefix gamma100_k1_v42
+```
+
+Then run a separate PINN experiment.  `LIFT_TIME_GRID=2048` is recommended for
+this high-flux case so the causal lift resolves faster inventory transients.
+
+```bash
+%cd /content/gdrive/MyDrive/pinn_v96
+!WORK_DIR=/content/pinn_v96_conservative_lift_code \
+  RUN_ROOT=/content/gdrive/MyDrive/pinn_v96/runs_conservative_lift_gamma100 \
+  GAMMA=100.0 K_CAT_STAR=1.0 \
+  FDM_PKL=/content/gdrive/MyDrive/FDM_parameter_scale_0711/gamma100_k1_v42_thin_layer_catalytic_v42.pkl \
+  LIFT_TIME_GRID=2048 \
+  FDM_COMPARE_EVERY=0 \
+  bash /content/pinn_v96_conservative_lift_code/run_colab_conservative_lift_three_stage_256x64.sh
+```
+
+The script checks the FDM `gamma` and `k_cat` metadata before starting.  It
+writes Stage 1, Stage 2, Stage 3, and posterior direct-comparison artifacts
+into the selected `RUN_ROOT`.
