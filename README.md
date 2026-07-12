@@ -6,7 +6,7 @@ evaluation and plotting.  It is not used in the training loss.
 
 ## Current Branch
 
-`codex/fluxtrace-green`
+`codex/highgamma-product-integral`
 
 Main code files:
 
@@ -28,6 +28,52 @@ Stage 1 is a reproducible warm-start model.  It prepares stable `C_A/C_B`,
 `C_B_int`, `J_rxn`, and coarse external fields without carrying over the many
 exploratory correction branches.  Stage 2 is the paper-facing model: Film-Abel
 interface memory plus erfc trace-preserving TraceGreen external propagation.
+
+## Product-Integral Interface Finetune
+
+`multiscale_film_tracegreen_productintegral` is a checkpoint-compatible,
+physics-fixed replacement for the Stage 2 interface trace. It integrates a
+piecewise-linear reaction-flux history analytically against the Abel
+`1/sqrt(t-tau)` kernel. The singular current cell is closed with two fixed-point
+updates and one scalar Newton projection:
+
+```text
+C_D_int[n] = completed_history
+           + 2*sqrt(dt/(pi*D_D))*(J[n-1]/3 + 2*J[n]/3)
+C_C_int[n] = gamma - C_D_int[n]
+J[n] = k_cat*C_B_surface[n]*C_C_int[n]
+       /(1 + k_cat*delta*C_C_int[n]/D_B)
+```
+
+The old finite-memory boost, phase-Abel term, interface residual, and smooth
+concentration bound remain checkpoint-compatible but are frozen and ignored.
+FDM remains posterior-only. Run a zero-training report followed by a 300-epoch
+fine-tune with:
+
+```bash
+CLEAN_BEST=/absolute/path/to/stage2_clean_best.pth \
+FDM_PKL=/absolute/path/to/matching_fdm.pkl \
+GAMMA=10.0 K_CAT_STAR=1.0 \
+bash run_colab_productintegral_finetune_256x64.sh
+```
+
+For the final from-scratch workflow, train Dynamic-Green and then transition
+directly to ProductIntegral-TraceGreen, with no intermediate clean Film-Abel
+stage:
+
+```bash
+GAMMA=10.0 K_CAT_STAR=1.0 \
+FDM_PKL=/absolute/path/to/matching_fdm.pkl \
+RUN_ROOT=/absolute/path/to/new_run_directory \
+bash run_colab_productintegral_two_stage_256x64.sh
+```
+
+The script first audits the zero-training ProductIntegral transition, then
+trains Stage 2 without the Inventory-Hermite lift. After selecting the Stage 2
+physics-best checkpoint, it applies the lift as a zero-training algebraic
+transform and exports the final CV/concentration report. The lift never enters
+the optimizer; this preserves the earlier ablation result that training through
+the lift is neutral or harmful compared with applying it after training.
 
 ### Stage 1: Fixed Dynamic Green Warm Start
 

@@ -239,6 +239,10 @@ MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_TRACEGREEN_MIXEDABEL_PATH = 
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_TRACEGREEN_MIXEDABEL_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel_best.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_best.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_productintegral.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_productintegral_best.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_LIFT_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_productintegral_lift.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_LIFT_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_productintegral_lift_best.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_CONSERVATIVE_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_conservative.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_CONSERVATIVE_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_conservative_best.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_MIXEDFLUX_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_mixedflux.pth'
@@ -333,6 +337,12 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     elif arch == "multiscale_film_tracegreen_clean":
         current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_PATH
         best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_BEST_PATH
+    elif arch == "multiscale_film_tracegreen_productintegral":
+        current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_PATH
+        best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_BEST_PATH
+    elif arch == "multiscale_film_tracegreen_productintegral_lift":
+        current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_LIFT_PATH
+        best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_LIFT_BEST_PATH
     elif arch == "multiscale_film_tracegreen_clean_conservative":
         current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_CONSERVATIVE_PATH
         best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_CONSERVATIVE_BEST_PATH
@@ -1718,6 +1728,221 @@ class InterfaceStateNet_v9_6_FilmTraceClean(
         # The transition width vanishes continuously as t -> 0; enforce the
         # exact initial trace at the endpoint used by the IC loss/evaluator.
         return torch.where(T_raw <= 0.0, torch.zeros_like(mapped), mapped)
+
+
+class InterfaceStateNet_v9_6_FilmTraceProductIntegral(
+    InterfaceStateNet_v9_6_FilmTraceClean
+):
+    """Causal interface trace from singularity-matched product integration.
+
+    The clean Film-Abel model used a midpoint Abel rule plus learned finite-memory
+    and phase corrections.  That combination is poorly conditioned when the film
+    reaction saturates at high gamma, and its smooth concentration bound adds an
+    O(gamma) offset near the initial state.  This paper-facing ablation instead
+    integrates a piecewise-linear reaction flux analytically on every time cell.
+
+    The final cell contains the unknown current J_n.  Two unrolled fixed-point
+    updates followed by one analytic Newton projection solve the scalar
+    film-reaction/Abel coupling.  Legacy memory
+    parameters remain registered for strict checkpoint compatibility but are
+    frozen and do not participate in this forward path.
+    """
+
+    def __init__(self, *args, fixed_point_iterations=2, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.product_integral_interface = True
+        self.fixed_point_iterations = max(1, int(fixed_point_iterations))
+        self._last_product_integral_diagnostics = None
+
+        # The interface trace is now a fixed physical operator.  Retain the old
+        # tensors only so a clean checkpoint can be loaded with strict=True.
+        for parameter in self.parameters():
+            parameter.requires_grad_(False)
+
+    def _history_feature_flux_scale(self):
+        return max(characteristic_reaction_flux(gamma, self.active_k_cat()), 1e-8)
+
+    def _completed_product_integral(self, j_known, step_index, dt, device, dtype):
+        """Integrate completed cells with an exact linear/sqrt-kernel rule."""
+        if step_index <= 1:
+            return torch.zeros(1, 1, device=device, dtype=dtype)
+
+        j_left = j_known[:-1]
+        j_right = j_known[1:]
+        delta_j = j_right - j_left
+        cells = torch.arange(step_index - 1, device=device, dtype=dtype).reshape(-1, 1)
+        lag_hi = (float(step_index) - cells) * dt
+        lag_lo = torch.clamp(lag_hi - dt, min=0.0)
+        sqrt_hi = torch.sqrt(lag_hi)
+        sqrt_lo = torch.sqrt(lag_lo)
+
+        intercept = j_left + delta_j * lag_hi / dt
+        cell_integral = (
+            2.0 * intercept * (sqrt_hi - sqrt_lo)
+            - (2.0 / 3.0) * (delta_j / dt)
+            * (lag_hi.pow(1.5) - lag_lo.pow(1.5))
+        )
+        diffusion = torch.as_tensor(D_rel_D, device=device, dtype=dtype)
+        return torch.sum(cell_integral, dim=0, keepdim=True) / torch.sqrt(
+            torch.clamp(np.pi * diffusion, min=1e-12)
+        )
+
+    def _history_grid(self, T_ref):
+        use_cache = self.training and torch.is_grad_enabled()
+        cache_key = (
+            T_ref.device,
+            T_ref.dtype,
+            torch.is_grad_enabled(),
+            self.condition_cache_key(),
+            "product_integral",
+            self.fixed_point_iterations,
+        )
+        if use_cache and self._film_abel_cache is not None and self._film_abel_cache[0] == cache_key:
+            return self._film_abel_cache[1]
+
+        device = T_ref.device
+        dtype = T_ref.dtype
+        t_grid = self.time_grid.to(device=device, dtype=dtype)
+        dt = float(T_sim) / float(self.time_grid_points - 1)
+        diffusion = torch.as_tensor(D_rel_D, device=device, dtype=dtype)
+        current_cell_factor = 2.0 * torch.sqrt(
+            torch.as_tensor(dt, device=device, dtype=dtype)
+            / torch.clamp(np.pi * diffusion, min=1e-12)
+        )
+        lambdas = self.film_abel_memory_lambdas.to(device=device, dtype=dtype)
+        decay = torch.exp(-dt / torch.clamp(lambdas, min=1e-6))
+
+        j_rows = []
+        fixed_point_residual_rows = []
+        cb_surface_rows = []
+        cb_int_rows = []
+        cc_int_rows = []
+        cd_int_rows = []
+        slope_rows = []
+        q_rows = []
+        memory_rows = []
+        q_hist = torch.zeros(1, 1, device=device, dtype=dtype)
+        memory = torch.zeros(1, lambdas.shape[1], device=device, dtype=dtype)
+
+        for idx in range(self.time_grid_points):
+            t = t_grid[idx:idx + 1]
+            _, _, c_b_surface, _ = self._surface_state(t)
+
+            if idx == 0:
+                c_d_int = torch.zeros(1, 1, device=device, dtype=dtype)
+                c_c_int = torch.as_tensor(gamma, device=device, dtype=dtype).reshape(1, 1)
+                c_b_int, j_rxn, surface_slope = self._film_reaction(c_b_surface, c_c_int)
+                fixed_point_residual = torch.zeros_like(j_rxn)
+            else:
+                j_known = torch.cat(j_rows, dim=0)
+                completed = self._completed_product_integral(
+                    j_known, idx, dt, device, dtype
+                )
+                j_previous = j_known[-1:]
+                j_guess = j_previous
+
+                for _ in range(self.fixed_point_iterations):
+                    c_d_candidate = completed + current_cell_factor * (
+                        (1.0 / 3.0) * j_previous + (2.0 / 3.0) * j_guess
+                    )
+                    c_c_candidate = gamma - c_d_candidate
+                    _, j_guess, _ = self._film_reaction(c_b_surface, c_c_candidate)
+
+                c_d_int = completed + current_cell_factor * (
+                    (1.0 / 3.0) * j_previous + (2.0 / 3.0) * j_guess
+                )
+                c_c_int = gamma - c_d_int
+                c_b_int, j_rxn, surface_slope = self._film_reaction(c_b_surface, c_c_int)
+
+                # One analytic Newton projection closes the scalar implicit
+                # equation to float precision after the two inexpensive fixed-
+                # point updates.  This adds no learned degree of freedom.
+                k_value = self._active_k_tensor(c_c_int)
+                film_denom = 1.0 + (k_value * delta / D_rel_B) * c_c_int
+                d_j_d_c_d = -k_value * c_b_surface / torch.clamp(
+                    film_denom.pow(2), min=1e-12
+                )
+                closure = c_d_int - completed - current_cell_factor * (
+                    (1.0 / 3.0) * j_previous + (2.0 / 3.0) * j_rxn
+                )
+                closure_derivative = 1.0 - current_cell_factor * (2.0 / 3.0) * d_j_d_c_d
+                c_d_int = c_d_int - closure / torch.clamp(
+                    closure_derivative, min=1e-8
+                )
+                c_c_int = gamma - c_d_int
+                c_b_int, j_rxn, surface_slope = self._film_reaction(c_b_surface, c_c_int)
+                fixed_point_residual = c_d_int - completed - current_cell_factor * (
+                    (1.0 / 3.0) * j_previous + (2.0 / 3.0) * j_rxn
+                )
+
+            q_next = q_hist + j_rxn * dt
+            memory_next = decay * memory + j_rxn * dt
+            cb_surface_rows.append(c_b_surface)
+            cb_int_rows.append(c_b_int)
+            cc_int_rows.append(c_c_int)
+            cd_int_rows.append(c_d_int)
+            j_rows.append(j_rxn)
+            fixed_point_residual_rows.append(fixed_point_residual)
+            slope_rows.append(surface_slope)
+            q_rows.append(q_next)
+            memory_rows.append(memory_next)
+            q_hist = q_next
+            memory = memory_next
+
+        j_grid = torch.cat(j_rows, dim=0)
+        c_d_grid = torch.cat(cd_int_rows, dim=0)
+        if self.time_grid_points > 1:
+            d_j_grid = torch.zeros_like(j_grid)
+            d_j_grid[1:-1] = (j_grid[2:] - j_grid[:-2]) / (2.0 * dt)
+            d_j_grid[0] = (j_grid[1] - j_grid[0]) / dt
+            d_j_grid[-1] = (j_grid[-1] - j_grid[-2]) / dt
+        else:
+            d_j_grid = torch.zeros_like(j_grid)
+
+        fixed_point_residual = torch.cat(fixed_point_residual_rows, dim=0)
+        lower_violation = torch.relu(-c_d_grid)
+        upper_violation = torch.relu(c_d_grid - gamma)
+        self._last_product_integral_diagnostics = {
+            "c_d_min": c_d_grid.detach().min(),
+            "c_d_max": c_d_grid.detach().max(),
+            "bounds_max": torch.maximum(lower_violation.max(), upper_violation.max()).detach(),
+            "fixed_point_max": fixed_point_residual.detach().abs().max(),
+            "all_finite": torch.isfinite(c_d_grid.detach()).all() & torch.isfinite(j_grid.detach()).all(),
+        }
+
+        history = {
+            "C_B_surface": torch.cat(cb_surface_rows, dim=0),
+            "C_B_int": torch.cat(cb_int_rows, dim=0),
+            "C_C_int": torch.cat(cc_int_rows, dim=0),
+            "C_D_int": c_d_grid,
+            "C_D_prior": c_d_grid,
+            "J": j_grid,
+            "dJ": d_j_grid,
+            "surface_slope": torch.cat(slope_rows, dim=0),
+            "Q": torch.cat(q_rows, dim=0),
+            "M": torch.cat(memory_rows, dim=0),
+        }
+        if use_cache:
+            self._film_abel_cache = (cache_key, history)
+        return history
+
+    def forward(self, T_raw):
+        # Interpolate the already solved causal trace.  Re-evaluating the old
+        # continuous-time Abel/bounded path here would reintroduce its bias.
+        history = self._history_grid(T_raw)
+        c_d_int = self._interp_multi_grid(T_raw, history["C_D_int"])
+        c_c_int = gamma - c_d_int
+        _, _, c_b_surface, _ = self._surface_state(T_raw)
+        c_b_int, j_rxn, surface_slope = self._film_reaction(c_b_surface, c_c_int)
+        return {
+            "C_B_surface": c_b_surface,
+            "C_B_int": c_b_int,
+            "C_C_int": c_c_int,
+            "J_rxn": j_rxn,
+            "dJ_rxn_dt": self._interp_multi_grid(T_raw, history["dJ"]),
+            "Q_rxn": self._interp_multi_grid(T_raw, history["Q"]),
+            "surface_slope": surface_slope,
+        }
 
 
 class InterfaceStateNet_v9_6_FilmTraceKParam(InterfaceStateNet_v9_6_FilmTraceClean):
@@ -4345,6 +4570,49 @@ def create_models_v96(
                 cache_history=green_cache_history,
             ),
         )
+    if arch == "multiscale_film_tracegreen_productintegral":
+        interface_state = InterfaceStateNet_v9_6_FilmTraceProductIntegral(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        return (
+            ThinLayerNet_v9_6_MultiscaleHermite(
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+            ),
+            ExternalNet_v9_6_FilmTraceGreenClean(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
+    if arch == "multiscale_film_tracegreen_productintegral_lift":
+        interface_state = InterfaceStateNet_v9_6_FilmTraceProductIntegral(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        return (
+            ThinLayerNet_v9_6_InventoryHermiteLift(
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                lift_time_grid_points=lift_time_grid,
+            ),
+            ExternalNet_v9_6_FilmTraceGreenClean(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
     if arch in {
         "multiscale_film_tracegreen_clean_conservative",
         "multiscale_film_tracegreen_clean_mixedflux",
@@ -4803,6 +5071,20 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
             err = torch.abs(C_C_test + C_D_test - gamma).max().item()
             err_CD_max = max(err_CD_max, err)
 
+        interface_state = getattr(model_ext, "interface_state", None)
+        product_integral_diag = getattr(
+            interface_state, "_last_product_integral_diagnostics", None
+        )
+        if product_integral_diag is not None:
+            product_integral_diag = {
+                key: (
+                    bool(value.detach().cpu())
+                    if key == "all_finite"
+                    else float(value.detach().cpu())
+                )
+                for key, value in product_integral_diag.items()
+            }
+
     # 4. CV峰电流
     T_surf = torch.linspace(0, T_sim, 300, device=device).reshape(-1, 1)
     X_surf = torch.zeros_like(T_surf)
@@ -4831,12 +5113,22 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
         print(f"Peak Current: {J_peak:.4f} @ θ={theta_peak:.2f}")
         print(f"Conservation A+B: {err_AB_max:.2e}")
         print(f"Conservation C+D: {err_CD_max:.2e}")
+        if product_integral_diag is not None:
+            print(
+                "Product integral: "
+                f"C_D=[{product_integral_diag['c_d_min']:.4e}, "
+                f"{product_integral_diag['c_d_max']:.4e}], "
+                f"bounds={product_integral_diag['bounds_max']:.2e}, "
+                f"fixed-point={product_integral_diag['fixed_point_max']:.2e}, "
+                f"finite={product_integral_diag['all_finite']}"
+            )
         print(f"{'='*60}")
 
     return {
         'nernst_err': nernst_err,
         'nernst_max_err': nernst_max_err,
         'surface_state_err': surface_state_err,
+        'product_integral': product_integral_diag,
         'C_B_int_mean': C_B_int_mean,
         'C_C_int_mean': C_C_int_mean,
         'J_rxn_mean': J_rxn_mean,
@@ -5172,6 +5464,7 @@ def run_fdm_posterior_compare(model_thin, model_ext, epoch, arch_name, fdm_pkl,
         "--n-x-in", str(n_x_in),
         "--n-x-out", str(n_x_out),
         "--batch-size", str(batch_size),
+        "--cv-points", "800",
         "--output-json", output_json,
         "--output-npz", output_npz,
         "--output-figure", output_figure,
@@ -5185,6 +5478,10 @@ def run_fdm_posterior_compare(model_thin, model_ext, epoch, arch_name, fdm_pkl,
         ])
         if not model_ext.history_grad:
             cmd.append("--green-detach-history")
+    if getattr(model_thin, "inventory_hermite_lift", False):
+        cmd.extend([
+            "--lift-time-grid", str(model_thin.lift_time_grid_points),
+        ])
 
     result = subprocess.run(
         cmd,
@@ -5276,7 +5573,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     seen_params = set()
     for module in (model_thin, model_ext):
         for param in module.parameters():
-            if id(param) not in seen_params:
+            if param.requires_grad and id(param) not in seen_params:
                 params.append(param)
                 seen_params.add(id(param))
     is_kparam = is_k_parameterized(model_ext=model_ext, model_thin=model_thin)
@@ -5548,7 +5845,10 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 f"lambdas={interface_state.interface_memory_lambdas.detach().cpu().numpy().reshape(-1).tolist()}, "
                 f"corr_scales={interface_state.interface_corr_scales.detach().cpu().numpy().reshape(-1).tolist()}"
             )
-        if getattr(interface_state, "film_abel_interface", False):
+        if (
+            getattr(interface_state, "film_abel_interface", False)
+            and not getattr(interface_state, "product_integral_interface", False)
+        ):
             print(
                 " 12. Film-Abel interface chain: "
                 f"M={interface_state.time_grid_points}, K={interface_state.kernel_points}, "
@@ -5556,14 +5856,35 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 "C_B_int=C_B_surface/(1+k*delta*C_C_int/D_B), "
                 "C_D_int=Abel[J]-dt_phase*Abel[dJ]+small_residual"
             )
-        if getattr(interface_state, "film_abel_kernelmix_interface", False):
+        if getattr(interface_state, "product_integral_interface", False):
+            diagnostics = interface_state._last_product_integral_diagnostics
+            diagnostic_text = "not evaluated"
+            if diagnostics is not None:
+                diagnostic_text = (
+                    f"fixed_point_max={float(diagnostics['fixed_point_max'].detach().cpu()):.3e}, "
+                    f"bounds_max={float(diagnostics['bounds_max'].detach().cpu()):.3e}"
+                )
+            print(
+                " 12b. Product-integral interface: "
+                "piecewise-linear singular Abel rule with two fixed-point updates "
+                "and an analytic closure projection; "
+                "finite-memory, phase-Abel, residual, and smooth bound disabled; "
+                f"{diagnostic_text}"
+            )
+        if (
+            getattr(interface_state, "film_abel_kernelmix_interface", False)
+            and not getattr(interface_state, "product_integral_interface", False)
+        ):
             beta = interface_state._kernelmix_beta().detach().cpu().numpy().reshape(-1).tolist()
             print(
                 " 13. Film-Abel KernelMix prior: "
                 "C_D_prior=alpha*Abel[J]+sum(beta_i*ExpMemory_i[J])-dt_phase(state)*Abel[dJ]; "
                 f"alpha={float(interface_state._kernelmix_alpha().detach().cpu()):.4f}, beta={beta}"
             )
-        if getattr(interface_state, "interface_memory_v2", False):
+        if (
+            getattr(interface_state, "interface_memory_v2", False)
+            and not getattr(interface_state, "product_integral_interface", False)
+        ):
             finite_gain = interface_state._intmemory_finite_gain().detach().cpu().numpy().reshape(-1).tolist()
             corr_amp = float(interface_state._intmemory_corr_amplitude().detach().cpu())
             bounded_map = (
@@ -5592,19 +5913,30 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         if getattr(model_ext, "tracegreen_external", False):
             beta = float(model_ext.tracegreen_far_beta().detach().cpu())
             scales = model_ext.tracegreen_residual_scales.detach().cpu().numpy().reshape(-1).tolist()
+            trace_name = (
+                "ProductIntegral"
+                if getattr(interface_state, "product_integral_interface", False)
+                else "Film-Abel"
+            )
             print(
-                " 16. Film-Abel TraceGreen external field: "
-                "C_D=HeatDirichlet[C_D_int^film](x,t)+h01*(0-D_far)+R_smooth; "
-                "single Film-Abel boundary trace, PDE loss acts only on R_smooth; "
+                f" 16. {trace_name} TraceGreen external field: "
+                "C_D=HeatDirichlet[C_D_int](x,t)+h01*(0-D_far)+R_smooth; "
+                "single causal boundary trace, PDE loss acts only on R_smooth; "
                 f"far_beta={beta:.3f}, residual_scales={scales}"
             )
         if getattr(model_ext, "film_trace_clean_external", False):
-            print(
-                " 16b. Clean Film-TraceGreen final model: "
-                "Film-Abel/KernelMix interface state plus erfc trace-preserving "
-                "Dirichlet Green lift; exploratory dynamic, matched-Abel, and "
-                "reversal-jump ablation penalties are disabled."
-            )
+            if getattr(interface_state, "product_integral_interface", False):
+                print(
+                    " 16b. ProductIntegral-TraceGreen final model: fixed physical "
+                    "interface trace plus erfc trace-preserving Dirichlet Green lift."
+                )
+            else:
+                print(
+                    " 16b. Clean Film-TraceGreen final model: "
+                    "Film-Abel/KernelMix interface state plus erfc trace-preserving "
+                    "Dirichlet Green lift; exploratory dynamic, matched-Abel, and "
+                    "reversal-jump ablation penalties are disabled."
+                )
         if is_conservative_thin:
             print(
                 " 18. Thin inventory current: "
@@ -6260,12 +6592,22 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 gpu_msg = f" | cuda={allocated_gb:.1f}/{reserved_gb:.1f} GB peak={peak_gb:.1f} GB"
             interface_state = getattr(model_ext, "interface_state", None)
             phase_msg = ""
-            if getattr(interface_state, "film_abel_interface", False):
+            if (
+                getattr(interface_state, "film_abel_interface", False)
+                and not getattr(interface_state, "product_integral_interface", False)
+            ):
                 phase_msg = (
                     f" | dt_phase={float(interface_state._phase_shift().detach().cpu()):+.3e}"
                     f" | D_eff={float(interface_state._abel_diffusion().detach().cpu()):.3f}"
                     f" | abel_gain={float(interface_state._abel_gain().detach().cpu()):.3f}"
                 )
+            if getattr(interface_state, "product_integral_interface", False):
+                diagnostics = interface_state._last_product_integral_diagnostics
+                if diagnostics is not None:
+                    phase_msg = (
+                        f" | PI_closure={float(diagnostics['fixed_point_max'].detach().cpu()):.2e}"
+                        f" | PI_bounds={float(diagnostics['bounds_max'].detach().cpu()):.2e}"
+                    )
             if getattr(interface_state, "mixed_abel_interface", False):
                 phase_msg += f" | abel_mix_lambda={float(interface_state._abel_mix_lambda().detach().cpu()):.6f}"
             if hasattr(model_ext, "clean_residual_scale"):
@@ -6894,7 +7236,7 @@ if __name__ == "__main__":
                         help="Fixed bulk C concentration ratio for this run.")
     parser.add_argument("--k-cat-star", type=float, default=REFERENCE_K_CAT_STAR,
                         help="Fixed catalytic reaction constant for this run.")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_conservative_lift", "multiscale_film_tracegreen_kparam", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_productintegral", "multiscale_film_tracegreen_productintegral_lift", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_conservative_lift", "multiscale_film_tracegreen_kparam", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256,
                         help="Global history time-grid size for multiscale_green_grid.")
     parser.add_argument("--green-kernel-points", type=int, default=32,
