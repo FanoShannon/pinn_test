@@ -61,7 +61,7 @@ KPARAM_LOG10_STD = 1.25
 KPARAM_LOG10_SCALE = 1.0
 KPARAM_SUPPORT = "positive_finite"
 KPARAM_PARAMETERIZATION = "k_cat_log10"
-KPARAM_INTERFACE_OPERATOR = "product_integral_piecewise_linear_newton_v1"
+KPARAM_INTERFACE_OPERATOR = "product_integral_piecewise_linear_newton_v2"
 
 k_cat_star = REFERENCE_K_CAT_STAR
 gamma = REFERENCE_GAMMA
@@ -192,6 +192,9 @@ def parameterization_metadata(model_ext):
         metadata["k_interface_operator"] = operator
         metadata["product_integral_fixed_point_iterations"] = int(
             getattr(interface_state, "fixed_point_iterations", 2)
+        )
+        metadata["product_integral_newton_projection_iterations"] = int(
+            getattr(interface_state, "newton_projection_iterations", 1)
         )
     metadata.update(getattr(model_ext, "k_sampling_metadata", {}))
     return metadata
@@ -1786,16 +1789,20 @@ class InterfaceStateNet_v9_6_FilmTraceProductIntegral(
     integrates a piecewise-linear reaction flux analytically on every time cell.
 
     The final cell contains the unknown current J_n.  Two unrolled fixed-point
-    updates followed by one analytic Newton projection solve the scalar
+    updates followed by analytic Newton projections solve the scalar
     film-reaction/Abel coupling.  Legacy memory
     parameters remain registered for strict checkpoint compatibility but are
     frozen and do not participate in this forward path.
     """
 
-    def __init__(self, *args, fixed_point_iterations=2, **kwargs):
+    def __init__(self, *args, fixed_point_iterations=2,
+                 newton_projection_iterations=1, **kwargs):
         super().__init__(*args, **kwargs)
         self.product_integral_interface = True
         self.fixed_point_iterations = max(1, int(fixed_point_iterations))
+        self.newton_projection_iterations = max(
+            1, int(newton_projection_iterations)
+        )
         self._last_product_integral_diagnostics = None
 
         # The interface trace is now a fixed physical operator.  Retain the old
@@ -1845,6 +1852,7 @@ class InterfaceStateNet_v9_6_FilmTraceProductIntegral(
             self.condition_cache_key(),
             "product_integral",
             self.fixed_point_iterations,
+            self.newton_projection_iterations,
         )
         if use_cache and self._film_abel_cache is not None and self._film_abel_cache[0] == cache_key:
             return self._film_abel_cache[1]
@@ -1900,22 +1908,26 @@ class InterfaceStateNet_v9_6_FilmTraceProductIntegral(
                 c_d_int = completed + current_cell_factor * (
                     (1.0 / 3.0) * j_previous + (2.0 / 3.0) * j_guess
                 )
-                c_c_int = gamma - c_d_int
-                c_b_int, j_rxn, surface_slope = self._film_reaction(c_b_surface, c_c_int)
-
-                # One analytic Newton projection closes the scalar implicit
-                # equation to float precision after the two inexpensive fixed-
-                # point updates.  This adds no learned degree of freedom.
-                d_j_d_c_d = self._product_integral_d_j_d_c_d(
-                    c_b_surface, c_c_int
-                )
-                closure = c_d_int - completed - current_cell_factor * (
-                    (1.0 / 3.0) * j_previous + (2.0 / 3.0) * j_rxn
-                )
-                closure_derivative = 1.0 - current_cell_factor * (2.0 / 3.0) * d_j_d_c_d
-                c_d_int = c_d_int - closure / torch.clamp(
-                    closure_derivative, min=1e-8
-                )
+                # Repeated analytic Newton projections close the stiff scalar
+                # equation at high Damkohler number.  The fixed-parameter
+                # baseline keeps one projection; kparam uses a few unrolled
+                # projections without adding learned degrees of freedom.
+                for _ in range(self.newton_projection_iterations):
+                    c_c_int = gamma - c_d_int
+                    _, j_rxn, _ = self._film_reaction(c_b_surface, c_c_int)
+                    d_j_d_c_d = self._product_integral_d_j_d_c_d(
+                        c_b_surface, c_c_int
+                    )
+                    closure = c_d_int - completed - current_cell_factor * (
+                        (1.0 / 3.0) * j_previous + (2.0 / 3.0) * j_rxn
+                    )
+                    closure_derivative = (
+                        1.0
+                        - current_cell_factor * (2.0 / 3.0) * d_j_d_c_d
+                    )
+                    c_d_int = c_d_int - closure / torch.clamp(
+                        closure_derivative, min=1e-8
+                    )
                 c_c_int = gamma - c_d_int
                 c_b_int, j_rxn, surface_slope = self._film_reaction(c_b_surface, c_c_int)
                 fixed_point_residual = c_d_int - completed - current_cell_factor * (
@@ -2002,8 +2014,13 @@ class InterfaceStateNet_v9_6_FilmTraceKParam(
     of reusing the old learned Film-Abel correction calibrated at k=1.
     """
 
-    def __init__(self, *args, k_reference=KPARAM_REFERENCE, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, *args, k_reference=KPARAM_REFERENCE,
+                 newton_projection_iterations=4, **kwargs):
+        super().__init__(
+            *args,
+            newton_projection_iterations=newton_projection_iterations,
+            **kwargs,
+        )
         self.k_parameterized = True
         self.kparam_interface_operator = KPARAM_INTERFACE_OPERATOR
         self.k_reference = float(k_reference)
@@ -4981,6 +4998,21 @@ def validate_checkpoint_physical_parameters(
                     "Checkpoint product-integral closure mismatch: "
                     f"checkpoint iterations={stored_iterations}, active={active_iterations}: {path}"
                 )
+            active_newton_iterations = int(
+                getattr(interface_state, "newton_projection_iterations", 1)
+            )
+            stored_newton_iterations = parameters.get(
+                "product_integral_newton_projection_iterations"
+            )
+            if (
+                stored_newton_iterations is None
+                or int(stored_newton_iterations) != active_newton_iterations
+            ):
+                raise ValueError(
+                    "Checkpoint product-integral Newton projection mismatch: "
+                    f"checkpoint iterations={stored_newton_iterations}, "
+                    f"active={active_newton_iterations}: {path}"
+                )
         elif allow_fixed_reference:
             stored_k = float(parameters.get("k_cat_star", KPARAM_REFERENCE))
             if not np.isclose(stored_k, KPARAM_REFERENCE, rtol=1e-7, atol=1e-10):
@@ -6084,7 +6116,8 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             print(
                 " 12b. Product-integral interface: "
                 "piecewise-linear singular Abel rule with two fixed-point updates "
-                "and an analytic closure projection; "
+                f"and {int(interface_state.newton_projection_iterations)} "
+                "analytic Newton closure projection(s); "
                 "finite-memory, phase-Abel, residual, and smooth bound disabled; "
                 f"{diagnostic_text}"
             )

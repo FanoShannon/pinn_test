@@ -114,6 +114,8 @@ class ParameterScaleConsistencyTests(unittest.TestCase):
             param_ext, fixed_ext.state_dict(), "test external warm-start"
         )
         pinn.set_model_k_cat(param_thin, param_ext, 1.0)
+        self.assertEqual(fixed_ext.interface_state.newton_projection_iterations, 1)
+        self.assertEqual(param_ext.interface_state.newton_projection_iterations, 4)
         fixed_thin.eval()
         fixed_ext.eval()
         param_thin.eval()
@@ -182,6 +184,7 @@ class ParameterScaleConsistencyTests(unittest.TestCase):
                 "k_condition_transform": "tanh(log10(k/k_reference))",
                 "k_interface_operator": pinn.KPARAM_INTERFACE_OPERATOR,
                 "product_integral_fixed_point_iterations": 2,
+                "product_integral_newton_projection_iterations": 4,
             }
         }
         pinn.validate_checkpoint_physical_parameters(
@@ -192,6 +195,17 @@ class ParameterScaleConsistencyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             pinn.validate_checkpoint_physical_parameters(
                 old_operator, "old_kparam.pth", model_ext=model_ext, evaluation_k=1.0
+            )
+        wrong_newton = {"parameters": dict(parameterized["parameters"])}
+        wrong_newton["parameters"][
+            "product_integral_newton_projection_iterations"
+        ] = 1
+        with self.assertRaises(ValueError):
+            pinn.validate_checkpoint_physical_parameters(
+                wrong_newton,
+                "old_newton_kparam.pth",
+                model_ext=model_ext,
+                evaluation_k=100.0,
             )
         pinn.validate_checkpoint_physical_parameters(
             parameterized, "kparam.pth", model_ext=model_ext, evaluation_k=1000.0
