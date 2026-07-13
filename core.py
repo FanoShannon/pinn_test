@@ -113,6 +113,8 @@ class ProductIntegralInterface(nn.Module):
         super().__init__()
         self.k = self._positive(k, "k")
         self.gamma = self._positive(gamma, "gamma")
+        self.reference_k = self.k
+        self.reference_gamma = self.gamma
         self.history_points = max(32, int(history_points))
         self._cache: Dict[Tuple[Any, ...], Dict[str, Tensor]] = {}
 
@@ -130,6 +132,16 @@ class ProductIntegralInterface(nn.Module):
 
     def clear_cache(self) -> None:
         self._cache.clear()
+
+    @staticmethod
+    def characteristic_flux(k: float, gamma: float) -> float:
+        return k * gamma / (1.0 + k * gamma * DELTA / D_B)
+
+    def surface_correction_scale(self) -> float:
+        """Scale learned electrode-slope corrections in J/J_ref units."""
+        active = self.characteristic_flux(self.k, self.gamma)
+        reference = self.characteristic_flux(self.reference_k, self.reference_gamma)
+        return active / max(reference, 1e-12)
 
     def _film(self, c_b_surface: Tensor, d: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         c_c = (self.gamma * (1.0 - d)).clamp_min(torch.finfo(d.dtype).tiny)
@@ -227,7 +239,8 @@ class HermiteThinLayer(nn.Module):
               + h01 * state.c_b_interface + h11 * DELTA * state.interface_slope)
         raw = self.correction(t, s)
         gate = (1.0 - torch.exp(-40.0 * t)).clamp(0, 1)
-        cb = cb + gate * (0.25 * s * (1 - s) ** 2 * torch.tanh(raw[:, 1:2])
+        j_scale = self.interface.surface_correction_scale()
+        cb = cb + gate * (0.25 * j_scale * s * (1 - s) ** 2 * torch.tanh(raw[:, 1:2])
                           + 1.5 * s**2 * (1 - s) ** 2 * torch.tanh(raw[:, 0:1]))
         return 1.0 - cb, cb, raw
 
@@ -239,7 +252,8 @@ class HermiteThinLayer(nn.Module):
         state = self.interface(t)
         raw = self.correction(t, torch.zeros_like(t))
         gate = (1.0 - torch.exp(-40.0 * t)).clamp(0, 1)
-        slope = state.surface_slope + (0.25 / DELTA) * gate * torch.tanh(raw[:, 1:2])
+        j_scale = self.interface.surface_correction_scale()
+        slope = state.surface_slope + (0.25 * j_scale / DELTA) * gate * torch.tanh(raw[:, 1:2])
         return D_A * slope
 
 
@@ -412,6 +426,7 @@ def save_base_checkpoint(path: str | Path, model: MinimalKGModel, epoch: int,
             "training_data": "physics_only",
             "fdm_used_for_training": False,
             "inference": "productintegral_tracegreen_inventory_lift",
+            "surface_correction": "dimensionless_J_over_J_ref_v1",
             "history_points": model.history_points,
             "kernel_points": model.kernel_points,
             "lift_points": model.lift_points,

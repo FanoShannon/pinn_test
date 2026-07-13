@@ -9,6 +9,7 @@ It keeps only:
 - Hermite thin-layer field with one trainable correction network
 - trace-preserving TraceGreen external field
 - zero-training causal inventory lift
+- `J_ref(k,gamma)` scaling of the learned electrode-slope correction
 - FDM posterior comparison
 
 FDM is never accepted by `train_base.py`. It is read only by `posterior.py`.
