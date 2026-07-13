@@ -218,6 +218,12 @@ class HermiteThinLayer(nn.Module):
         super().__init__()
         self.interface = interface
         self.correction = ThinCorrection()
+        self.network_enabled = True
+
+    def correction_raw(self, t: Tensor, s: Tensor) -> Tensor:
+        if self.network_enabled:
+            return self.correction(t, s)
+        return torch.zeros(t.shape[0], 2, device=t.device, dtype=t.dtype)
 
     def forward_base(self, t: Tensor, x: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         state = self.interface(t)
@@ -225,7 +231,7 @@ class HermiteThinLayer(nn.Module):
         h00, h10, h01, h11 = hermite_basis(s)
         cb = (h00 * state.c_b_surface + h10 * DELTA * state.surface_slope
               + h01 * state.c_b_interface + h11 * DELTA * state.interface_slope)
-        raw = self.correction(t, s)
+        raw = self.correction_raw(t, s)
         gate = (1.0 - torch.exp(-40.0 * t)).clamp(0, 1)
         cb = cb + gate * (0.25 * s * (1 - s) ** 2 * torch.tanh(raw[:, 1:2])
                           + 1.5 * s**2 * (1 - s) ** 2 * torch.tanh(raw[:, 0:1]))
@@ -237,7 +243,7 @@ class HermiteThinLayer(nn.Module):
 
     def surface_current_base(self, t: Tensor) -> Tensor:
         state = self.interface(t)
-        raw = self.correction(t, torch.zeros_like(t))
+        raw = self.correction_raw(t, torch.zeros_like(t))
         gate = (1.0 - torch.exp(-40.0 * t)).clamp(0, 1)
         slope = state.surface_slope + (0.25 / DELTA) * gate * torch.tanh(raw[:, 1:2])
         return D_A * slope
@@ -268,7 +274,8 @@ class InventoryLift(nn.Module):
 
     def _amplitude_grid(self, device: torch.device, dtype: torch.dtype) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         interface = self.thin.interface
-        key = (device.type, device.index, str(dtype), interface.k, interface.gamma, self.points)
+        key = (device.type, device.index, str(dtype), interface.k, interface.gamma,
+               self.thin.network_enabled, self.points)
         if key in self._cache:
             return self._cache[key]
         with torch.enable_grad():
@@ -379,6 +386,10 @@ class MinimalKGModel(nn.Module):
 
     def set_conditions(self, k: float, gamma: float) -> None:
         self.interface.set_conditions(k, gamma)
+        self.lift.clear_cache()
+
+    def set_network_enabled(self, enabled: bool) -> None:
+        self.thin.network_enabled = bool(enabled)
         self.lift.clear_cache()
 
     def forward_thin(self, t: Tensor, x: Tensor, lifted: bool = True) -> Tuple[Tensor, Tensor]:

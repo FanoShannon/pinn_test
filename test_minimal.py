@@ -52,6 +52,21 @@ class MinimalModelTest(unittest.TestCase):
             self.assertFalse(payload["parameters"]["fdm_used_for_training"])
             self.assertEqual(loaded.base_k, 0.3)
 
+    def test_network_zero_mode_is_exact_and_clears_lift(self):
+        model = MinimalKGModel(1.0, 10.0, history_points=48, kernel_points=16, lift_points=256)
+        with torch.no_grad():
+            model.thin.correction.output.bias.fill_(0.5)
+        t = torch.tensor([[0.25], [0.75]])
+        x = torch.tensor([[0.01], [0.02]])
+        _, trained = model.thin(t, x)
+        model.lift._cache[("sentinel",)] = ()
+        model.set_network_enabled(False)
+        _, physics = model.thin(t, x)
+        _, _, raw = model.thin.forward_base(t, x)
+        self.assertFalse(torch.allclose(trained, physics))
+        self.assertTrue(torch.equal(raw, torch.zeros_like(raw)))
+        self.assertEqual(model.lift._cache, {})
+
 
 if __name__ == "__main__":
     unittest.main()

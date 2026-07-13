@@ -84,8 +84,20 @@ case "$MODE" in
       --checkpoint "$BASE_CKPT" --manifest "$FDM_MANIFEST" \
       --device "$DEVICE" --output-dir "$RUN_ROOT/kg_lift_posterior"
     ;;
+  audit)
+    RUN_TAG="${RUN_TAG:-network_audit_$(date +%Y%m%d_%H%M%S)}"
+    RUN_ROOT="${RUN_ROOT:-/content/gdrive/MyDrive/pinn_v96_minimal/${RUN_TAG}}"
+    mkdir -p "$RUN_ROOT"
+    BASE_CKPT="${BASE_CKPT:?Set BASE_CKPT to base_best.pth}"
+    FDM_MANIFEST="${FDM_MANIFEST:?Set FDM_MANIFEST to kg_cases_v42.tsv}"
+    echo "Network contribution audit: trained vs strict zero, both with inventory lift"
+    "$PYTHON" -u posterior.py \
+      --checkpoint "$BASE_CKPT" --manifest "$FDM_MANIFEST" \
+      --network-mode both --device "$DEVICE" \
+      --output-dir "$RUN_ROOT/network_audit"
+    ;;
   *)
-    echo "MODE must be base, base1, lift, or kg; got ${MODE}" >&2
+    echo "MODE must be base, base1, lift, kg, or audit; got ${MODE}" >&2
     exit 2
     ;;
 esac

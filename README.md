@@ -108,6 +108,22 @@ Then evaluate one base over the whole manifest:
 cache, and always recomputes inventory lift for that pair. FDM remains outside
 the model and loss; it is used only after inference to report posterior error.
 
+## 4. Network contribution audit
+
+The audit evaluates the same checkpoint and FDM cases twice. Both paths use
+inventory lift; the only difference is whether the trained Hermite correction
+network is active or strictly bypassed.
+
+```bash
+!MODE=audit \
+  BASE_CKPT=/content/gdrive/MyDrive/pinn_v96_minimal/base2_k1.0_gamma10.0/stage2/base_best.pth \
+  FDM_MANIFEST=/content/gdrive/MyDrive/FDM_kg_v42/kg_cases_v42.tsv \
+  RUN_TAG=base2_k1_g10_network_audit bash ./run_colab.sh
+```
+
+`network_contribution_summary.json` defines a positive `network_improvement`
+as an error reduction caused by the trained network. FDM remains posterior-only.
+
 ## Outputs
 
 - `stage1/base_best.pth`: Stage 1 deterministic physics best
@@ -115,3 +131,4 @@ the model and loss; it is used only after inference to report posterior error.
 - `stage1/training.jsonl`, `stage2/training.jsonl`: physics histories
 - `lift_posterior/posterior_summary.json`: one lifted posterior
 - `kg_lift_posterior/posterior_summary.json`: aggregate mean and worst pair
+- `network_audit/network_contribution_summary.json`: trained-vs-zero network effect
