@@ -399,7 +399,8 @@ class MinimalKGModel(nn.Module):
 
 def save_base_checkpoint(path: str | Path, model: MinimalKGModel, epoch: int,
                          optimizer: Optional[torch.optim.Optimizer] = None,
-                         score: Optional[float] = None) -> None:
+                         score: Optional[float] = None,
+                         extra_parameters: Optional[Dict[str, Any]] = None) -> None:
     payload: Dict[str, Any] = {
         "format": FORMAT,
         "epoch": int(epoch),
@@ -419,6 +420,8 @@ def save_base_checkpoint(path: str | Path, model: MinimalKGModel, epoch: int,
     }
     if optimizer is not None:
         payload["optimizer_state_dict"] = optimizer.state_dict()
+    if extra_parameters:
+        payload["parameters"].update(extra_parameters)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, path)
