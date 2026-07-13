@@ -69,6 +69,13 @@ GAMMAPARAM_CALIBRATION_RANGE = (0.1, 100.0)
 GAMMAPARAM_SUPPORT = "positive_finite"
 GAMMAPARAM_PARAMETERIZATION = "gamma_log10"
 GAMMAPARAM_INTERFACE_OPERATOR = "normalized_product_integral_piecewise_linear_newton_v1"
+KGPARAM_PARAMETERIZATION = "k_cat_gamma_log10"
+KGPARAM_INTERFACE_OPERATOR = "normalized_product_integral_piecewise_linear_newton_joint_v1"
+KGPARAM_VALIDATION_PAIRS = (
+    (0.1, 0.1), (0.1, 10.0), (0.1, 100.0),
+    (1.0, 0.1), (1.0, 10.0), (1.0, 100.0),
+    (10.0, 0.1), (10.0, 10.0), (10.0, 100.0),
+)
 
 k_cat_star = REFERENCE_K_CAT_STAR
 gamma = REFERENCE_GAMMA
@@ -143,6 +150,9 @@ def set_model_k_cat(model_thin, model_ext, value):
     if setter is None:
         raise TypeError("This architecture does not support runtime k_cat conditioning")
     setter(value)
+    clear_lift = getattr(model_thin, "clear_lift_cache", None)
+    if clear_lift is not None:
+        clear_lift()
 
 
 def model_active_gamma(model_ext=None, model_thin=None):
@@ -213,8 +223,58 @@ def activate_gamma_from_input(interface_state, x_input):
     return x_input[:, :2]
 
 
+def activate_kg_from_input(interface_state, x_input):
+    """Read one physical (k_cat, gamma) pair from [T, X, k_cat, gamma]."""
+    if x_input.shape[1] < 4:
+        return x_input[:, :2]
+    k_values = x_input[:, 2:3]
+    gamma_values = x_input[:, 3:4]
+    if not torch.isfinite(k_values).all() or not torch.isfinite(gamma_values).all():
+        raise ValueError("Joint parameter input contains NaN or Inf")
+    for name, values in (("k_cat", k_values), ("gamma", gamma_values)):
+        if not torch.allclose(
+            values,
+            torch.ones_like(values) * values[0:1],
+            rtol=1e-6,
+            atol=1e-8,
+        ):
+            raise ValueError(
+                "Product-integral kgparam batches must contain one shared "
+                f"{name} value"
+            )
+    setter = getattr(interface_state, "set_conditions", None)
+    k_value = float(k_values[0].detach().cpu())
+    gamma_value = float(gamma_values[0].detach().cpu())
+    if setter is not None:
+        setter(k_value, gamma_value)
+    else:
+        interface_state.set_k_cat(k_value)
+        interface_state.set_gamma(gamma_value)
+    return x_input[:, :2]
+
+
+def _joint_condition_values(model, condition_value):
+    if condition_value is None:
+        return (
+            model_active_k_cat(model_thin=model),
+            model_active_gamma(model_thin=model),
+        )
+    if isinstance(condition_value, dict):
+        return float(condition_value["k_cat"]), float(condition_value["gamma"])
+    if isinstance(condition_value, (tuple, list)) and len(condition_value) == 2:
+        return float(condition_value[0]), float(condition_value[1])
+    raise ValueError("Joint parameterized inputs require condition_value=(k_cat, gamma)")
+
+
 def conditioned_model_inputs(model, T_raw, X_raw, condition_value=None):
     inputs = torch.cat([T_raw, X_raw], dim=1)
+    if is_joint_parameterized(model_thin=model):
+        k_value, gamma_value = _joint_condition_values(model, condition_value)
+        return torch.cat([
+            inputs,
+            torch.ones_like(T_raw) * k_value,
+            torch.ones_like(T_raw) * gamma_value,
+        ], dim=1)
     if getattr(model, "k_parameterized", False):
         if condition_value is None:
             condition_value = model_active_k_cat(model_thin=model)
@@ -240,7 +300,43 @@ def is_gamma_parameterized(model_ext=None, model_thin=None):
     )
 
 
+def is_joint_parameterized(model_ext=None, model_thin=None):
+    return bool(
+        is_k_parameterized(model_ext=model_ext, model_thin=model_thin)
+        and is_gamma_parameterized(model_ext=model_ext, model_thin=model_thin)
+    )
+
+
 def parameterization_metadata(model_ext):
+    if is_joint_parameterized(model_ext=model_ext):
+        interface_state = getattr(model_ext, "interface_state", None)
+        metadata = {
+            "parameterization": KGPARAM_PARAMETERIZATION,
+            "k_support": KPARAM_SUPPORT,
+            "gamma_support": GAMMAPARAM_SUPPORT,
+            "k_reference": float(getattr(model_ext, "k_reference", KPARAM_REFERENCE)),
+            "gamma_reference": float(getattr(model_ext, "gamma_reference", GAMMAPARAM_REFERENCE)),
+            "k_condition_transform": "tanh(log10(k/k_reference))",
+            "gamma_condition_transform": "tanh(log10(gamma/gamma_reference))",
+            "gamma_calibration_range": list(GAMMAPARAM_CALIBRATION_RANGE),
+            "joint_interaction_gate": "eta_k*eta_gamma",
+            "joint_sampling": "one_shared_pair_per_step_independent_physics_sampling",
+            "joint_validation_pairs": [list(pair) for pair in KGPARAM_VALIDATION_PAIRS],
+            "joint_interface_operator": getattr(
+                interface_state, "kgparam_interface_operator", KGPARAM_INTERFACE_OPERATOR
+            ),
+            "product_integral_fixed_point_iterations": int(
+                getattr(interface_state, "fixed_point_iterations", 2)
+            ),
+            "product_integral_newton_projection_iterations": int(
+                getattr(interface_state, "newton_projection_iterations", 4)
+            ),
+            "training_data": "physics_only",
+            "fdm_used_for_training": False,
+            "selection_metric": "deterministic_joint_physics_validation",
+        }
+        metadata.update(getattr(model_ext, "joint_sampling_metadata", {}))
+        return metadata
     if is_gamma_parameterized(model_ext=model_ext):
         interface_state = getattr(model_ext, "interface_state", None)
         metadata = {
@@ -382,6 +478,8 @@ MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_PATH = './pinn_thin_layer_catalytic_
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_kparam_best.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_GAMMAPARAM_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_gammaparam.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_GAMMAPARAM_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_gammaparam_best.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KGPARAM_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_kgparam.pth'
+MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KGPARAM_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_kgparam_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_ema_best.pth'
 MODEL_V96_MULTISCALE_BUFFER_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_buffer.pth'
@@ -495,6 +593,12 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     }:
         current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_GAMMAPARAM_PATH
         best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_GAMMAPARAM_BEST_PATH
+    elif arch in {
+        "multiscale_film_tracegreen_kgparam",
+        "multiscale_film_tracegreen_kgparam_lift",
+    }:
+        current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KGPARAM_PATH
+        best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KGPARAM_BEST_PATH
     elif arch == "multiscale_green_grid_film_abel_ema":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_EMA_BEST_PATH
@@ -2285,6 +2389,48 @@ class InterfaceStateNet_v9_6_FilmTraceGammaParam(
         )
 
 
+class InterfaceStateNet_v9_6_FilmTraceKGParam(
+    InterfaceStateNet_v9_6_FilmTraceGammaParam
+):
+    """Normalized ProductIntegral closure with one shared (k, gamma) pair."""
+
+    def __init__(self, *args, newton_projection_iterations=4, **kwargs):
+        super().__init__(
+            *args,
+            newton_projection_iterations=newton_projection_iterations,
+            **kwargs,
+        )
+        self.k_parameterized = True
+        self.gamma_parameterized = True
+        self.kg_parameterized = True
+        self.kgparam_interface_operator = KGPARAM_INTERFACE_OPERATOR
+
+    def set_conditions(self, k_value, gamma_value):
+        k_value = float(k_value)
+        gamma_value = float(gamma_value)
+        if not np.isfinite(k_value) or k_value <= 0.0:
+            raise ValueError(f"k_cat must be finite and positive, got {k_value}")
+        if not np.isfinite(gamma_value) or gamma_value <= 0.0:
+            raise ValueError(f"gamma must be finite and positive, got {gamma_value}")
+        changed = (
+            not np.isclose(k_value, self.active_k_cat(), rtol=0.0, atol=1e-12)
+            or not np.isclose(gamma_value, self.active_gamma(), rtol=0.0, atol=1e-12)
+        )
+        if changed:
+            self._k_cat_condition.fill_(k_value)
+            self._gamma_condition.fill_(gamma_value)
+            self.clear_step_cache()
+
+    def condition_cache_key(self):
+        return ("kg", self.active_k_cat(), self.active_gamma())
+
+    def _history_feature_flux_scale(self):
+        return max(
+            characteristic_reaction_flux(self.active_gamma(), self.active_k_cat()),
+            1e-8,
+        )
+
+
 class HISInterfaceStateNet_v9_6(nn.Module):
     """Minimal interface-state block for the HIS-PINN prototype.
 
@@ -2538,6 +2684,57 @@ class ThinLayerNet_v9_6_MultiscaleHermiteGammaParam(
         return base + gamma_feature * self.gamma_adapter(adapter_input)
 
 
+class ThinLayerNet_v9_6_MultiscaleHermiteKGParam(
+    ThinLayerNet_v9_6_MultiscaleHermite
+):
+    """Joint conditional correction that vanishes on k=1 and gamma=10 axes."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.k_parameterized = True
+        self.gamma_parameterized = True
+        self.kg_parameterized = True
+        self.kg_adapter = MultiscaleResidualHead(
+            out_features=2,
+            width=64,
+            depth=2,
+            in_features=4,
+        )
+        nn.init.zeros_(self.kg_adapter.net[-1].weight)
+        nn.init.zeros_(self.kg_adapter.net[-1].bias)
+
+    def active_k_cat(self):
+        return self.interface_state.active_k_cat()
+
+    def active_gamma(self):
+        return self.interface_state.active_gamma()
+
+    def set_k_cat(self, value):
+        self.interface_state.set_k_cat(value)
+
+    def set_gamma(self, value):
+        self.interface_state.set_gamma(value)
+
+    def forward(self, x_input):
+        base_input = activate_kg_from_input(self.interface_state, x_input)
+        return super().forward(base_input)
+
+    def _raw_field(self, x_net, T_raw, X_raw):
+        base = self.net(x_net)
+        eta_k = torch.ones_like(T_raw) * self.interface_state.log_k_condition(T_raw)
+        eta_gamma = torch.ones_like(T_raw) * self.interface_state.log_gamma_condition(T_raw)
+        if self.normalize_inputs:
+            adapter_input = torch.cat([
+                normalize_time(T_raw),
+                normalize_thin_x(X_raw),
+                eta_k,
+                eta_gamma,
+            ], dim=1)
+        else:
+            adapter_input = torch.cat([T_raw, X_raw, eta_k, eta_gamma], dim=1)
+        return base + eta_k * eta_gamma * self.kg_adapter(adapter_input)
+
+
 class ThinLayerNet_v9_6_MultiscaleHermiteConservative(ThinLayerNet_v9_6_MultiscaleHermite):
     """Checkpoint-compatible Hermite thin layer with inventory supervision."""
 
@@ -2744,6 +2941,22 @@ class ThinLayerNet_v9_6_InventoryHermiteLiftGammaParam(
         return ThinLayerNet_v9_6_InventoryHermiteLift.forward(self, base_input)
 
 
+class ThinLayerNet_v9_6_InventoryHermiteLiftKGParam(
+    ThinLayerNet_v9_6_InventoryHermiteLift,
+    ThinLayerNet_v9_6_MultiscaleHermiteKGParam,
+):
+    """Posterior-only inventory lift over the joint conditional field."""
+
+    k_parameterized = True
+    gamma_parameterized = True
+    kg_parameterized = True
+    kgparam_posterior_lift = True
+
+    def forward(self, x_input):
+        base_input = activate_kg_from_input(self.interface_state, x_input)
+        return ThinLayerNet_v9_6_InventoryHermiteLift.forward(self, base_input)
+
+
 class ThinLayerNet_v9_6_MultiscaleHermiteMixedFlux(
     ThinLayerNet_v9_6_MultiscaleHermiteConservative
 ):
@@ -2785,9 +2998,12 @@ def thin_current_components(model_thin, T_raw, quadrature_points=16, create_grap
 
     X_surface = torch.zeros_like(T_raw, requires_grad=True)
     active_k = model_active_k_cat(model_thin=model_thin)
+    active_gamma = model_active_gamma(model_thin=model_thin)
     active_condition = (
-        model_active_gamma(model_thin=model_thin)
-        if is_gamma_parameterized(model_thin=model_thin) else active_k
+        (active_k, active_gamma)
+        if is_joint_parameterized(model_thin=model_thin) else (
+            active_gamma if is_gamma_parameterized(model_thin=model_thin) else active_k
+        )
     )
     C_A_surface, _ = model_thin(
         conditioned_model_inputs(model_thin, T_raw, X_surface, active_condition)
@@ -4163,6 +4379,37 @@ class ExternalNet_v9_6_FilmTraceGreenGammaParam(
         return C_C, C_D
 
 
+class ExternalNet_v9_6_FilmTraceGreenKGParam(
+    ExternalNet_v9_6_FilmTraceGreenGammaParam
+):
+    """TraceGreen field driven by one shared runtime (k_cat, gamma) pair."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.k_parameterized = True
+        self.gamma_parameterized = True
+        self.kg_parameterized = True
+        self.k_reference = float(self.interface_state.k_reference)
+
+    def active_k_cat(self):
+        return self.interface_state.active_k_cat()
+
+    def set_k_cat(self, value):
+        self.interface_state.set_k_cat(value)
+        self.clear_step_cache()
+
+    def pde_fields(self, x_input):
+        base_input = activate_kg_from_input(self.interface_state, x_input)
+        return ExternalNet_v9_6_FilmTraceGreenClean.pde_fields(self, base_input)
+
+    def forward(self, x_input):
+        base_input = activate_kg_from_input(self.interface_state, x_input)
+        c_d_base, residual = self.tracegreen_lift_and_residual(base_input)
+        C_D = c_d_base + residual
+        gamma_t = self.interface_state._active_gamma_tensor(C_D)
+        return gamma_t - C_D, C_D
+
+
 class ExternalNet_v9_6_MultiscaleGreenGridMemory(ExternalNet_v9_6_MultiscaleGreenGridDynamic):
     """Dynamic Green-grid model with causal memory and coordinate-safe basis.
 
@@ -5142,6 +5389,39 @@ def create_models_v96(
                 cache_history=green_cache_history,
             ),
         )
+    if arch in {
+        "multiscale_film_tracegreen_kgparam",
+        "multiscale_film_tracegreen_kgparam_lift",
+    }:
+        interface_state = InterfaceStateNet_v9_6_FilmTraceKGParam(
+            normalize_inputs=normalize_inputs,
+            time_grid_points=green_time_grid,
+            kernel_points=green_kernel_points,
+        )
+        interface_state.set_conditions(k_cat_star, gamma)
+        thin_class = (
+            ThinLayerNet_v9_6_InventoryHermiteLiftKGParam
+            if arch.endswith("_lift")
+            else ThinLayerNet_v9_6_MultiscaleHermiteKGParam
+        )
+        thin_kwargs = {
+            "interface_state": interface_state,
+            "normalize_inputs": normalize_inputs,
+        }
+        if arch.endswith("_lift"):
+            thin_kwargs["lift_time_grid_points"] = lift_time_grid
+        return (
+            thin_class(**thin_kwargs),
+            ExternalNet_v9_6_FilmTraceGreenKGParam(
+                gamma,
+                interface_state=interface_state,
+                normalize_inputs=normalize_inputs,
+                time_grid_points=green_time_grid,
+                kernel_points=green_kernel_points,
+                history_grad=green_history_grad,
+                cache_history=green_cache_history,
+            ),
+        )
     if arch == "multiscale_green_grid_film_abel_ema":
         interface_state = InterfaceStateNet_v9_6_FilmAbelEMA(
             normalize_inputs=normalize_inputs,
@@ -5272,9 +5552,11 @@ def validate_checkpoint_physical_parameters(
     path,
     model_ext=None,
     evaluation_k=None,
+    evaluation_gamma=None,
     allow_fixed_reference=False,
 ):
     parameters = checkpoint.get('parameters', {})
+    target_is_joint = is_joint_parameterized(model_ext=model_ext)
     target_is_gammaparam = is_gamma_parameterized(model_ext=model_ext)
     for name, active in (("gamma", gamma), ("delta", delta)):
         if name == "gamma" and target_is_gammaparam:
@@ -5289,6 +5571,80 @@ def validate_checkpoint_physical_parameters(
             )
 
     checkpoint_kind = parameters.get("parameterization", "fixed")
+    if target_is_joint:
+        active_k = (
+            model_active_k_cat(model_ext=model_ext)
+            if evaluation_k is None else float(evaluation_k)
+        )
+        active_gamma = (
+            model_active_gamma(model_ext=model_ext)
+            if evaluation_gamma is None else float(evaluation_gamma)
+        )
+        for name, value in (("k_cat", active_k), ("gamma", active_gamma)):
+            if not np.isfinite(value) or value <= 0.0:
+                raise ValueError(f"Evaluation {name} must be finite and positive, got {value}")
+        if checkpoint_kind == KGPARAM_PARAMETERIZATION:
+            expected = {
+                "k_support": KPARAM_SUPPORT,
+                "gamma_support": GAMMAPARAM_SUPPORT,
+                "k_condition_transform": "tanh(log10(k/k_reference))",
+                "gamma_condition_transform": "tanh(log10(gamma/gamma_reference))",
+                "joint_interface_operator": KGPARAM_INTERFACE_OPERATOR,
+                "fdm_used_for_training": False,
+            }
+            for name, active in expected.items():
+                if parameters.get(name) != active:
+                    raise ValueError(
+                        f"Checkpoint joint-parameterization mismatch for {name}: "
+                        f"checkpoint={parameters.get(name)}, active={active}: {path}"
+                    )
+            for name, active in (
+                ("k_reference", KPARAM_REFERENCE),
+                ("gamma_reference", GAMMAPARAM_REFERENCE),
+            ):
+                stored = parameters.get(name)
+                if stored is None or not np.isclose(
+                    float(stored), float(active), rtol=1e-7, atol=1e-10
+                ):
+                    raise ValueError(
+                        f"Checkpoint joint reference mismatch for {name}: "
+                        f"checkpoint={stored}, active={active}: {path}"
+                    )
+            interface_state = getattr(model_ext, "interface_state", None)
+            for name, active in (
+                ("product_integral_fixed_point_iterations", int(
+                    getattr(interface_state, "fixed_point_iterations", 2)
+                )),
+                ("product_integral_newton_projection_iterations", int(
+                    getattr(interface_state, "newton_projection_iterations", 4)
+                )),
+            ):
+                stored = parameters.get(name)
+                if stored is None or int(stored) != active:
+                    raise ValueError(
+                        f"Checkpoint joint ProductIntegral mismatch for {name}: "
+                        f"checkpoint={stored}, active={active}: {path}"
+                    )
+        elif allow_fixed_reference and checkpoint_kind == "fixed":
+            stored_k = float(parameters.get("k_cat_star", KPARAM_REFERENCE))
+            stored_gamma = float(parameters.get("gamma", GAMMAPARAM_REFERENCE))
+            if not np.isclose(stored_k, KPARAM_REFERENCE, rtol=1e-7, atol=1e-10):
+                raise ValueError(
+                    "Joint warm-start requires fixed k_cat=1; "
+                    f"checkpoint k_cat={stored_k}: {path}"
+                )
+            if not np.isclose(stored_gamma, GAMMAPARAM_REFERENCE, rtol=1e-7, atol=1e-10):
+                raise ValueError(
+                    "Joint warm-start requires fixed gamma=10; "
+                    f"checkpoint gamma={stored_gamma}: {path}"
+                )
+        else:
+            raise ValueError(
+                "Joint parameterization requires either a matching kgparam resume "
+                "checkpoint or a fixed k=1, gamma=10 warm-start checkpoint."
+            )
+        return
+
     if target_is_gammaparam:
         if checkpoint_kind == GAMMAPARAM_PARAMETERIZATION:
             expected = {
@@ -5411,6 +5767,10 @@ def validate_checkpoint_physical_parameters(
         if checkpoint_kind == GAMMAPARAM_PARAMETERIZATION:
             raise ValueError(
                 f"A gamma-parameterized checkpoint requires the gammaparam architecture: {path}"
+            )
+        if checkpoint_kind == KGPARAM_PARAMETERIZATION:
+            raise ValueError(
+                f"A joint-parameterized checkpoint requires the kgparam architecture: {path}"
             )
         stored_k = parameters.get("k_cat_star")
         if stored_k is not None and not np.isclose(
@@ -5589,9 +5949,14 @@ def validate_model(model_thin, model_ext, device, epoch, verbose=True):
     model_ext.eval()
     active_k = model_active_k_cat(model_ext=model_ext, model_thin=model_thin)
     active_gamma = model_active_gamma(model_ext=model_ext, model_thin=model_thin)
-    active_condition = active_gamma if is_gamma_parameterized(
-        model_ext=model_ext, model_thin=model_thin
-    ) else active_k
+    active_condition = (
+        (active_k, active_gamma)
+        if is_joint_parameterized(model_ext=model_ext, model_thin=model_thin) else (
+            active_gamma if is_gamma_parameterized(
+                model_ext=model_ext, model_thin=model_thin
+            ) else active_k
+        )
+    )
 
     with torch.no_grad():
         # 1. Nernst误差
@@ -5765,9 +6130,14 @@ def fixed_physics_validation_score(
 
     active_k = model_active_k_cat(model_ext=model_ext, model_thin=model_thin)
     active_gamma = model_active_gamma(model_ext=model_ext, model_thin=model_thin)
-    active_condition = active_gamma if is_gamma_parameterized(
-        model_ext=model_ext, model_thin=model_thin
-    ) else active_k
+    active_condition = (
+        (active_k, active_gamma)
+        if is_joint_parameterized(model_ext=model_ext, model_thin=model_thin) else (
+            active_gamma if is_gamma_parameterized(
+                model_ext=model_ext, model_thin=model_thin
+            ) else active_k
+        )
+    )
     ext_scale = external_residual_scale(active_gamma)
     flux_scale = flux_residual_scale(active_gamma, active_k)
     is_flux_state = hasattr(model_ext, "flux_d")
@@ -6106,6 +6476,53 @@ def gamma_parameterized_physics_validation_score(
     return result
 
 
+def joint_parameterized_physics_validation_score(
+    model_thin,
+    model_ext,
+    device,
+    parameter_pairs=KGPARAM_VALIDATION_PAIRS,
+    **kwargs,
+):
+    """FDM-free mean/worst physics score over a deterministic k-gamma grid."""
+    per_pair = {}
+    for k_value, gamma_value in parameter_pairs:
+        result = fixed_physics_validation_score(
+            model_thin,
+            model_ext,
+            device,
+            k_value=float(k_value),
+            gamma_value=float(gamma_value),
+            **kwargs,
+        )
+        if not result.get("product_integral_valid", True):
+            raise FloatingPointError(
+                "Invalid ProductIntegral trace during joint validation: "
+                f"k={float(k_value):g}, gamma={float(gamma_value):g}, "
+                f"bounds={result['product_integral_bounds_max']:.3e}, "
+                f"closure={result['product_integral_closure_max']:.3e}"
+            )
+        per_pair[f"k={float(k_value):g},gamma={float(gamma_value):g}"] = result
+
+    scores = np.asarray([entry["score"] for entry in per_pair.values()], dtype=float)
+    result = {
+        "score": 0.5 * float(np.mean(scores)) + 0.5 * float(np.max(scores)),
+        "score_mean": float(np.mean(scores)),
+        "score_worst": float(np.max(scores)),
+        "per_pair": per_pair,
+        "product_integral_valid": True,
+    }
+    component_names = [
+        "pde_thin", "pde_ext", "surface", "farfield", "initial",
+        "bounds", "interface_thin", "interface_ext", "reversal",
+        "current_balance", "current_balance_rmse", "thin_conservation",
+        "thin_constitutive", "product_integral_bounds_max",
+        "product_integral_closure_max",
+    ]
+    for name in component_names:
+        result[name] = float(np.mean([entry[name] for entry in per_pair.values()]))
+    return result
+
+
 def run_fdm_posterior_compare(model_thin, model_ext, epoch, arch_name, fdm_pkl,
                               output_dir=None, n_time=160, n_x_in=120, n_x_out=160,
                               batch_size=65536, save_figure=False, save_fields=False):
@@ -6286,6 +6703,11 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             "multiscale_film_tracegreen_gammaparam_lift is posterior-only; "
             "train multiscale_film_tracegreen_gammaparam and apply the lift at evaluation"
         )
+    if getattr(model_thin, "kgparam_posterior_lift", False):
+        raise ValueError(
+            "multiscale_film_tracegreen_kgparam_lift is posterior-only; "
+            "train multiscale_film_tracegreen_kgparam and apply the lift at evaluation"
+        )
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     model_thin.to(device)
@@ -6300,6 +6722,12 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
                 seen_params.add(id(param))
     is_kparam = is_k_parameterized(model_ext=model_ext, model_thin=model_thin)
     is_gammaparam = is_gamma_parameterized(model_ext=model_ext, model_thin=model_thin)
+    is_kgparam = is_joint_parameterized(model_ext=model_ext, model_thin=model_thin)
+    if is_kgparam and (fdm_compare_pkl or int(fdm_compare_every) > 0):
+        raise ValueError(
+            "Joint parameter training is physics-only. Run FDM posterior comparison "
+            "in a separate process after the checkpoint is frozen."
+        )
     is_conservative_thin = bool(getattr(model_thin, "conservative_thin_current", False))
     is_mixed_thin = bool(getattr(model_thin, "mixed_flux_thin", False))
     is_inventory_lift = bool(getattr(model_thin, "inventory_hermite_lift", False))
@@ -6314,8 +6742,11 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     current_balance_samples = max(32, int(current_balance_samples))
     original_requires_grad = {id(param): param.requires_grad for param in params}
     adapter_module = (
-        getattr(model_thin, "k_adapter", None)
-        if is_kparam else getattr(model_thin, "gamma_adapter", None)
+        getattr(model_thin, "kg_adapter", None)
+        if is_kgparam else (
+            getattr(model_thin, "k_adapter", None)
+            if is_kparam else getattr(model_thin, "gamma_adapter", None)
+        )
     )
     adapter_param_ids = {
         id(param) for param in (adapter_module or nn.Identity()).parameters()
@@ -6408,7 +6839,23 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     kparam_log10_std = float(kparam_log10_std)
     if not np.isfinite(kparam_log10_std) or kparam_log10_std <= 0.0:
         raise ValueError("kparam_log10_std must be finite and positive")
-    if is_kparam:
+    gammaparam_anchor_probability = float(np.clip(
+        gammaparam_anchor_probability, 0.0, 1.0
+    ))
+    if is_kgparam:
+        model_ext.joint_sampling_metadata = {
+            "k_anchor_values": list(KPARAM_ANCHORS),
+            "k_anchor_probabilities": [0.25, 0.50, 0.25],
+            "k_anchor_epochs": kparam_anchor_epochs,
+            "k_anchor_probability_after_stage1": kparam_anchor_probability,
+            "k_log10_normal_std": kparam_log10_std,
+            "gamma_anchor_values": list(GAMMAPARAM_ANCHORS),
+            "gamma_anchor_probability": gammaparam_anchor_probability,
+            "gamma_continuous_distribution": "log10_uniform[-1,2]",
+            "joint_validation_pairs": [list(pair) for pair in KGPARAM_VALIDATION_PAIRS],
+            "backbone_frozen": True,
+        }
+    elif is_kparam:
         model_ext.k_sampling_metadata = {
             "k_anchor_values": list(KPARAM_ANCHORS),
             "k_anchor_probabilities": [0.25, 0.50, 0.25],
@@ -6418,10 +6865,7 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             "k_validation_values": list(KPARAM_VALIDATION_VALUES),
             "k_freeze_backbone_epochs": kparam_freeze_backbone_epochs,
         }
-    if is_gammaparam:
-        gammaparam_anchor_probability = float(np.clip(
-            gammaparam_anchor_probability, 0.0, 1.0
-        ))
+    if is_gammaparam and not is_kgparam:
         model_ext.gamma_sampling_metadata = {
             "gamma_anchor_values": list(GAMMAPARAM_ANCHORS),
             "gamma_anchor_probability": gammaparam_anchor_probability,
@@ -6510,7 +6954,15 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         f"flux={flux_residual_scale(k_cat_value=model_active_k_cat(model_ext=model_ext)):.6g}, "
         f"J_ref={characteristic_reaction_flux(k_cat_value=model_active_k_cat(model_ext=model_ext)):.6g}"
     )
-    if is_kparam:
+    if is_kgparam:
+        print(
+            "  6c. joint k-gamma parameterization: "
+            f"k_support={KPARAM_SUPPORT}, gamma_support={GAMMAPARAM_SUPPORT}, "
+            f"k_anchors={KPARAM_ANCHORS}, gamma_anchors={GAMMAPARAM_ANCHORS}, "
+            f"validation_pairs={len(KGPARAM_VALIDATION_PAIRS)}, "
+            "interaction_gate=eta_k*eta_gamma, backbone_frozen=True, FDM=forbidden"
+        )
+    elif is_kparam:
         print(
             "  6c. k-parameterization: "
             f"support={KPARAM_SUPPORT}, anchors={KPARAM_ANCHORS}, "
@@ -6721,7 +7173,11 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         local_epoch = epoch - start_epoch
         kparam_schedule_epoch = epoch if is_kparam else local_epoch
         if is_kparam:
-            if backbone_frozen and kparam_schedule_epoch >= kparam_freeze_backbone_epochs:
+            if (
+                not is_kgparam
+                and backbone_frozen
+                and kparam_schedule_epoch >= kparam_freeze_backbone_epochs
+            ):
                 for param in params:
                     param.requires_grad_(original_requires_grad[id(param)])
                 backbone_frozen = False
@@ -6741,7 +7197,9 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         if is_gammaparam:
             step_gamma = sample_gammaparam_value(gammaparam_anchor_probability)
             set_model_gamma(model_thin, model_ext, step_gamma)
-            step_condition = step_gamma
+            step_condition = (
+                (step_k, step_gamma) if is_kgparam else step_gamma
+            )
         else:
             step_gamma = float(gamma)
             step_condition = step_k
@@ -7262,10 +7720,13 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         # from checkpoint selection and stopping to avoid posterior data leakage.
         if completed_step % early_stop_check_every == 0:
             validation_fn = (
-                gamma_parameterized_physics_validation_score
-                if is_gammaparam else (
-                    parameterized_physics_validation_score
-                    if is_kparam else fixed_physics_validation_score
+                joint_parameterized_physics_validation_score
+                if is_kgparam else (
+                    gamma_parameterized_physics_validation_score
+                    if is_gammaparam else (
+                        parameterized_physics_validation_score
+                        if is_kparam else fixed_physics_validation_score
+                    )
                 )
             )
             validation = validation_fn(
@@ -7294,11 +7755,15 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
             loss_history.setdefault('physics_validation_score', []).append(raw_validation_score)
             loss_history.setdefault('physics_validation_ema', []).append(validation_ema)
             loss_history.setdefault('physics_validation_epoch', []).append(epoch + 1)
-            if is_kparam:
+            if is_kgparam:
+                loss_history.setdefault('physics_validation_per_pair', []).append(
+                    {key: value['score'] for key, value in validation['per_pair'].items()}
+                )
+            elif is_kparam:
                 loss_history.setdefault('physics_validation_per_k', []).append(
                     {key: value['score'] for key, value in validation['per_k'].items()}
                 )
-            if is_gammaparam:
+            if is_gammaparam and not is_kgparam:
                 loss_history.setdefault('physics_validation_per_gamma', []).append(
                     {key: value['score'] for key, value in validation['per_gamma'].items()}
                 )
@@ -7541,10 +8006,13 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
     # Still create a physically selected best checkpoint for downstream stages.
     if not np.isfinite(best_score):
         validation_fn = (
-            gamma_parameterized_physics_validation_score
-            if is_gammaparam else (
-                parameterized_physics_validation_score
-                if is_kparam else fixed_physics_validation_score
+            joint_parameterized_physics_validation_score
+            if is_kgparam else (
+                gamma_parameterized_physics_validation_score
+                if is_gammaparam else (
+                    parameterized_physics_validation_score
+                    if is_kparam else fixed_physics_validation_score
+                )
             )
         )
         validation = validation_fn(
@@ -7567,11 +8035,15 @@ def train_model_v9_6(model_thin, model_ext, n_epochs=30000, start_epoch=0, resum
         loss_history.setdefault('physics_validation_score', []).append(best_score)
         loss_history.setdefault('physics_validation_ema', []).append(best_score)
         loss_history.setdefault('physics_validation_epoch', []).append(best_epoch)
-        if is_kparam:
+        if is_kgparam:
+            loss_history.setdefault('physics_validation_per_pair', []).append(
+                {key: value['score'] for key, value in validation['per_pair'].items()}
+            )
+        elif is_kparam:
             loss_history.setdefault('physics_validation_per_k', []).append(
                 {key: value['score'] for key, value in validation['per_k'].items()}
             )
-        if is_gammaparam:
+        if is_gammaparam and not is_kgparam:
             loss_history.setdefault('physics_validation_per_gamma', []).append(
                 {key: value['score'] for key, value in validation['per_gamma'].items()}
             )
@@ -8024,7 +8496,7 @@ if __name__ == "__main__":
                         help="Fixed bulk C concentration ratio for this run.")
     parser.add_argument("--k-cat-star", type=float, default=REFERENCE_K_CAT_STAR,
                         help="Fixed catalytic reaction constant for this run.")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_productintegral", "multiscale_film_tracegreen_productintegral_lift", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_conservative_lift", "multiscale_film_tracegreen_kparam", "multiscale_film_tracegreen_kparam_lift", "multiscale_film_tracegreen_gammaparam", "multiscale_film_tracegreen_gammaparam_lift", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_productintegral", "multiscale_film_tracegreen_productintegral_lift", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_conservative_lift", "multiscale_film_tracegreen_kparam", "multiscale_film_tracegreen_kparam_lift", "multiscale_film_tracegreen_gammaparam", "multiscale_film_tracegreen_gammaparam_lift", "multiscale_film_tracegreen_kgparam", "multiscale_film_tracegreen_kgparam_lift", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256,
                         help="Global history time-grid size for multiscale_green_grid.")
     parser.add_argument("--green-kernel-points", type=int, default=32,
@@ -8120,6 +8592,14 @@ if __name__ == "__main__":
     parser.add_argument("--smoke-test", action="store_true",
                         help="Run a tiny forward/gradient/backward sanity check and exit.")
     args = parser.parse_args()
+
+    if "kgparam" in args.arch and (
+        args.fdm_csv or args.fdm_compare_pkl or args.fdm_compare_every > 0
+    ):
+        raise ValueError(
+            "kgparam training/evaluation in this entry point is physics-only. "
+            "Use compare_kg_parameter_cases.py after freezing the checkpoint."
+        )
 
     configure_physical_parameters(args.gamma, args.k_cat_star)
     print_physical_configuration()
