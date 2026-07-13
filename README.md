@@ -952,3 +952,47 @@ Seven-case posterior summaries are written to
 `runs_film_tracegreen_gammaparam_256x64/<RUN_TAG>/zero_shot_compare/gamma_parameter_summary.json`
 and, after training, to the corresponding `posterior_compare` directory.  FDM
 files are read only by the comparison process and never enter a training loss.
+
+## Joint k-gamma ProductIntegral
+
+`multiscale_film_tracegreen_kgparam` accepts one shared positive `(k_cat,
+gamma)` pair per causal optimizer step.  It uses the normalized
+`d=C_D/gamma` ProductIntegral closure and the interaction-only correction
+
+```text
+r(t,x;k,gamma) = r_clean(t,x) + eta_k*eta_gamma*Delta_r(t,x,eta_k,eta_gamma).
+```
+
+The gate is exactly zero on `k=1` and `gamma=10`, preserving both validated
+one-parameter axes.  The clean backbone remains frozen; only the zero-initialized
+interaction adapter is trainable.  No `d/dk` or `d/dgamma` PDE term is added.
+
+Joint training is hard-separated from FDM: the training runner has no FDM
+arguments, the model entry point rejects FDM flags for `kgparam`, and checkpoint
+selection uses the mean/worst deterministic physics score over a 3x3 parameter
+grid.  Checkpoints record `training_data=physics_only` and
+`fdm_used_for_training=false`.
+
+```bash
+WARM_START_CKPT="/content/gdrive/MyDrive/path/to/fixed_k1_gamma10_productintegral_best.pth" \
+RUN_TAG="kgparam_run01" EPOCHS=1500 \
+bash ./run_colab_film_tracegreen_kgparam_256x64.sh
+```
+
+After the checkpoint is frozen, use the separate posterior runner.  Set
+`ZERO_SHOT_FIXED_REFERENCE=1` when `CHECKPOINT` is the fixed reference model;
+leave it at zero for a trained joint checkpoint.
+
+```bash
+CHECKPOINT="/content/gdrive/MyDrive/path/to/frozen_checkpoint.pth" \
+FDM_DIR="/content/gdrive/MyDrive/FDM_kg_v42" \
+OUTPUT_DIR="/content/gdrive/MyDrive/pinn_v96_kg_runs/posterior" \
+ZERO_SHOT_FIXED_REFERENCE=1 \
+bash ./run_colab_film_tracegreen_kgparam_posterior.sh
+```
+
+The FDM repository branch `codex/kg-grid-v42` provides one stable runner for
+17 posterior cases: a 3x3 core grid, six interpolation/equal-`k*gamma`
+diagnostics, and two positive-k tail stress cases.  Existing single-parameter
+axis references are reused when available; every case is validated before it
+is listed in `kg_cases_v42.tsv`.
