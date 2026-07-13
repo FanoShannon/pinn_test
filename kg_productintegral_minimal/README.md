@@ -30,27 +30,33 @@ drive.mount('/content/gdrive')
 
 ## 1. Train any fixed base
 
-Example base at `k=1, gamma=10`:
+You only fill in these two physical parameters:
+
+```python
+K_CAT = 1.0
+GAMMA = 10.0
+```
+
+Then run:
 
 ```bash
-!MODE=base BASE_K=1 BASE_GAMMA=10 EPOCHS=1500 \
-  RUN_TAG=base_k1_g10 bash ./run_colab.sh
+!MODE=base K_CAT={K_CAT} GAMMA={GAMMA} EPOCHS=1500 bash ./run_colab.sh
 ```
 
 The checkpoint is:
 
 ```text
-/content/gdrive/MyDrive/pinn_v96_minimal/base_k1_g10/base/base_best.pth
+/content/gdrive/MyDrive/pinn_v96_minimal/base_k1.0_gamma10.0/base/base_best.pth
 ```
 
-Change only `BASE_K` and `BASE_GAMMA` to create another positive fixed base.
+Change only `K_CAT` and `GAMMA` to create another positive fixed base.
 The checkpoint records `physics_only` and `fdm_used_for_training=false`.
 
 ## 2. Zero-training lift at one case
 
 ```bash
 !MODE=lift \
-  BASE_CKPT=/content/gdrive/MyDrive/pinn_v96_minimal/base_k1_g10/base/base_best.pth \
+  BASE_CKPT=/content/gdrive/MyDrive/pinn_v96_minimal/base_k1.0_gamma10.0/base/base_best.pth \
   FDM_PKL=/content/gdrive/MyDrive/FDM_kg_v42/kg_k1_g10_v42_thin_layer_catalytic_v42.pkl \
   RUN_TAG=lift_k1_g10 bash ./run_colab.sh
 ```
@@ -75,7 +81,7 @@ Then evaluate one base over the whole manifest:
 ```bash
 %cd /content/pinn_minimal/kg_productintegral_minimal
 !MODE=kg \
-  BASE_CKPT=/content/gdrive/MyDrive/pinn_v96_minimal/base_k1_g10/base/base_best.pth \
+  BASE_CKPT=/content/gdrive/MyDrive/pinn_v96_minimal/base_k1.0_gamma10.0/base/base_best.pth \
   FDM_MANIFEST=/content/gdrive/MyDrive/FDM_kg_v42/kg_cases_v42.tsv \
   RUN_TAG=kg_from_k1_g10 bash ./run_colab.sh
 ```

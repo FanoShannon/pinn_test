@@ -4,27 +4,32 @@ set -euo pipefail
 # One entry point, three explicit jobs. FDM is accepted only by posterior modes.
 MODE="${MODE:-kg}"
 CODE_DIR="${CODE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-RUN_TAG="${RUN_TAG:-minimal_$(date +%Y%m%d_%H%M%S)}"
-RUN_ROOT="${RUN_ROOT:-/content/gdrive/MyDrive/pinn_v96_minimal/${RUN_TAG}}"
 PYTHON="${PYTHON:-python}"
 DEVICE="${DEVICE:-cuda}"
-mkdir -p "$RUN_ROOT"
 cd "$CODE_DIR"
 
 case "$MODE" in
   base)
-    BASE_K="${BASE_K:?Set BASE_K to the fixed base k_cat}"
-    BASE_GAMMA="${BASE_GAMMA:?Set BASE_GAMMA to the fixed base gamma}"
+    K_CAT="${K_CAT:-}"
+    GAMMA="${GAMMA:-}"
+    [[ -n "$K_CAT" ]] || { echo "Set K_CAT, for example K_CAT=1" >&2; exit 2; }
+    [[ -n "$GAMMA" ]] || { echo "Set GAMMA, for example GAMMA=10" >&2; exit 2; }
+    RUN_TAG="${RUN_TAG:-base_k${K_CAT}_gamma${GAMMA}}"
+    RUN_ROOT="${RUN_ROOT:-/content/gdrive/MyDrive/pinn_v96_minimal/${RUN_TAG}}"
+    mkdir -p "$RUN_ROOT"
     EPOCHS="${EPOCHS:-1500}"
     LR="${LR:-5e-5}"
     POINTS="${POINTS:-4096}"
-    echo "Training physics-only base k=${BASE_K}, gamma=${BASE_GAMMA}"
+    echo "Training physics-only base k=${K_CAT}, gamma=${GAMMA}"
     "$PYTHON" -u train_base.py \
-      --k "$BASE_K" --gamma "$BASE_GAMMA" --epochs "$EPOCHS" \
+      --k "$K_CAT" --gamma "$GAMMA" --epochs "$EPOCHS" \
       --lr "$LR" --points "$POINTS" --device "$DEVICE" \
       --output-dir "$RUN_ROOT/base"
     ;;
   lift)
+    RUN_TAG="${RUN_TAG:-lift_$(date +%Y%m%d_%H%M%S)}"
+    RUN_ROOT="${RUN_ROOT:-/content/gdrive/MyDrive/pinn_v96_minimal/${RUN_TAG}}"
+    mkdir -p "$RUN_ROOT"
     BASE_CKPT="${BASE_CKPT:?Set BASE_CKPT to base_best.pth}"
     FDM_PKL="${FDM_PKL:?Set FDM_PKL for posterior validation}"
     echo "Zero-training posterior with mandatory inventory lift"
@@ -33,6 +38,9 @@ case "$MODE" in
       --device "$DEVICE" --output-dir "$RUN_ROOT/lift_posterior"
     ;;
   kg)
+    RUN_TAG="${RUN_TAG:-kg_$(date +%Y%m%d_%H%M%S)}"
+    RUN_ROOT="${RUN_ROOT:-/content/gdrive/MyDrive/pinn_v96_minimal/${RUN_TAG}}"
+    mkdir -p "$RUN_ROOT"
     BASE_CKPT="${BASE_CKPT:?Set BASE_CKPT to base_best.pth}"
     FDM_MANIFEST="${FDM_MANIFEST:?Set FDM_MANIFEST to kg_cases_v42.tsv}"
     echo "Joint k/gamma zero-training posterior with mandatory inventory lift"
