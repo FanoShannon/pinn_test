@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Gamma generalization with k_cat=1 and delta=0.035. FDM is posterior-only.
-WORK_DIR="${WORK_DIR:-/content/gdrive/MyDrive/pinn_v96_gamma_latest}"
+# Run from the checked-out code directory by default; keep outputs in RUN_ROOT.
+WORK_DIR="${WORK_DIR:-$(pwd)}"
 PYTHON="${PYTHON:-python}"
 RUN_TAG="${RUN_TAG:-gamma_productintegral_run01}"
 RUN_ROOT="${RUN_ROOT:-${WORK_DIR}/runs_film_tracegreen_gammaparam_256x64/${RUN_TAG}}"
