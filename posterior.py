@@ -161,11 +161,12 @@ def main() -> None:
              else read_manifest(args.manifest))
     results = []
     for k, gamma, path in cases:
-        print(f"Posterior with mandatory lift: k={k}, gamma={gamma}, FDM={path}", flush=True)
+        print(f"Posterior with mandatory lift: FDM={path}", flush=True)
         result = evaluate_case(model, path, k, gamma, args)
         results.append(result)
         tag = f"k{result['k']:.8g}_gamma{result['gamma']:.8g}".replace(".", "p")
         (args.output_dir / f"{tag}.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+        print(f"  resolved parameters: k={result['k']:g}, gamma={result['gamma']:g}", flush=True)
         print(f"  overall={result['overall_dimensionless_rmse']:.6e} "
               f"CV/Jref={result.get('CV_J_over_J_ref', {}).get('rmse', math.nan):.6e}", flush=True)
 
