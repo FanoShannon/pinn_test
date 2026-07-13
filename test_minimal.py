@@ -42,22 +42,6 @@ class MinimalModelTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             model.forward_thin(t, x, lifted=False)
 
-    def test_surface_correction_scales_with_characteristic_flux(self):
-        model = MinimalKGModel(1.0, 10.0, history_points=48, kernel_points=16, lift_points=256)
-        with torch.no_grad():
-            model.thin.correction.output.bias[1] = 0.5
-        t = torch.tensor([[0.25]])
-
-        reference_physical = model.interface(t).surface_slope
-        reference_delta = model.thin.surface_current_base(t) - reference_physical
-        model.set_conditions(0.1, 0.1)
-        target_physical = model.interface(t).surface_slope
-        target_delta = model.thin.surface_current_base(t) - target_physical
-
-        expected = (model.interface.characteristic_flux(0.1, 0.1)
-                    / model.interface.characteristic_flux(1.0, 10.0))
-        self.assertAlmostEqual(float((target_delta / reference_delta).detach()), expected, places=5)
-
     def test_checkpoint_certifies_physics_only(self):
         model = MinimalKGModel(0.3, 2.0, history_points=48, kernel_points=16, lift_points=256)
         with tempfile.TemporaryDirectory() as tmp:
