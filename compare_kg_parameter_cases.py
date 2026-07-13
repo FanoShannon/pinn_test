@@ -41,6 +41,7 @@ def main():
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--apply-inventory-lift", action="store_true")
     parser.add_argument("--zero-shot-fixed-reference", action="store_true")
+    parser.add_argument("--disable-thin-network", action="store_true")
     parser.add_argument("--green-time-grid", type=int, default=256)
     parser.add_argument("--green-kernel-points", type=int, default=64)
     parser.add_argument("--lift-time-grid", type=int, default=4096)
@@ -50,6 +51,7 @@ def main():
     parser.add_argument("--n-x-out", type=int, default=160)
     parser.add_argument("--cv-points", type=int, default=2000)
     parser.add_argument("--save-fields", action="store_true")
+    parser.add_argument("--skip-figures", action="store_true")
     args = parser.parse_args()
 
     architecture = (
@@ -87,11 +89,16 @@ def main():
             "--n-x-out", str(args.n_x_out),
             "--cv-points", str(args.cv_points),
             "--output-json", str(output_json),
-            "--output-figure", str(output_dir / f"{label}_residual_summary.png"),
+            "--output-figure", (
+                "" if args.skip_figures
+                else str(output_dir / f"{label}_residual_summary.png")
+            ),
             "--output-npz", str(output_dir / f"{label}_fields.npz") if args.save_fields else "",
         ]
         if args.zero_shot_fixed_reference:
             command.append("--zero-shot-fixed-reference")
+        if args.disable_thin_network:
+            command.append("--disable-thin-network")
         subprocess.run(command, check=True)
         all_metrics[f"k={k_value:g},gamma={gamma_value:g}"] = json.loads(
             output_json.read_text(encoding="utf-8")
@@ -126,6 +133,7 @@ def main():
         "checkpoint": args.checkpoint,
         "architecture": architecture,
         "posterior_inventory_lift": bool(args.apply_inventory_lift),
+        "thin_neural_correction": not bool(args.disable_thin_network),
         "cases": all_metrics,
         "aggregate": aggregate,
         "fdm_usage": "frozen_checkpoint_posterior_evaluation_only",

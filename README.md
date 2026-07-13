@@ -996,3 +996,26 @@ The FDM repository branch `codex/kg-grid-v42` provides one stable runner for
 diagnostics, and two positive-k tail stress cases.  Existing single-parameter
 axis references are reused when available; every case is validated before it
 is listed in `kg_cases_v42.tsv`.
+# Best-Checkpoint KG NN Audit
+
+The posterior-only audit compares the epoch-2400 fixed `k=1, gamma=10`
+ProductIntegral checkpoint over all available joint FDM cases in four modes:
+
+- trained thin NN, without inventory lift;
+- zeroed thin NN, without inventory lift;
+- trained thin NN, with inventory lift;
+- zeroed thin NN, with inventory lift.
+
+FDM is read only after the checkpoint is frozen and never enters training,
+early stopping, loss weighting, or checkpoint selection.
+
+```bash
+CHECKPOINT=/path/to/pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_productintegral_best.pth \
+FDM_DIR=/path/to/FDM_kg_v42 \
+OUTPUT_DIR=/path/to/kg_nn_audit \
+bash ./run_colab_kg_best_nn_audit.sh
+```
+
+The combined result is written to
+`$OUTPUT_DIR/kg_nn_contribution_summary.json`. Positive contribution percentages
+mean that the named component reduced posterior error.

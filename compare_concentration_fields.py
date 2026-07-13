@@ -3,6 +3,7 @@ import json
 import os
 import pickle
 import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -635,6 +636,25 @@ def load_checkpoint(model_thin, model_ext, checkpoint, allow_fixed_reference=Fal
     return state.get("epoch", None)
 
 
+def disable_thin_neural_correction(model_thin):
+    """Bypass only the learned thin-film residual while retaining all physics."""
+    if not hasattr(model_thin, "_raw_field"):
+        raise TypeError(
+            f"Architecture {type(model_thin).__name__} has no thin residual hook."
+        )
+
+    def zero_raw_field(self, x_net, T_raw, X_raw):
+        del T_raw, X_raw
+        return torch.zeros(
+            (x_net.shape[0], 2), device=x_net.device, dtype=x_net.dtype
+        )
+
+    model_thin._raw_field = types.MethodType(zero_raw_field, model_thin)
+    clear_cache = getattr(model_thin, "clear_lift_cache", None)
+    if clear_cache is not None:
+        clear_cache()
+
+
 def configure_evaluation_parameters(args, fdm):
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     checkpoint_params = checkpoint.get("parameters", {})
@@ -840,6 +860,8 @@ def compare(args):
         args.checkpoint,
         allow_fixed_reference=getattr(args, "zero_shot_fixed_reference", False),
     )
+    if getattr(args, "disable_thin_network", False):
+        disable_thin_neural_correction(model_thin)
 
     t_fdm = np.asarray(fdm["t"], dtype=float)
     x_in_fdm = np.asarray(fdm["x_in"], dtype=float)
@@ -996,6 +1018,7 @@ def compare(args):
     print(f"Input mode: {args.input_mode}")
     print(f"Parameters: gamma={pinn.gamma}, k_cat_star={pinn.k_cat_star}")
     print(f"Device: {device}")
+    print(f"Thin neural correction: {'disabled' if args.disable_thin_network else 'enabled'}")
     print("field,rmse,mae,max_abs,bias,r2,nrmse,fdm_min,fdm_max,pinn_min,pinn_max")
     for name in [
         "C_A", "C_B", "C_C", "C_D", "C_B_int", "C_C_int",
@@ -1183,6 +1206,11 @@ def main():
                         help="Fixed k_cat*. Defaults to checkpoint metadata, then FDM metadata.")
     parser.add_argument("--zero-shot-fixed-reference", action="store_true",
                         help="Allow a fixed reference checkpoint to seed parameterized zero-shot evaluation.")
+    parser.add_argument(
+        "--disable-thin-network",
+        action="store_true",
+        help="Set the learned thin-film Hermite residual to zero for posterior ablation.",
+    )
     parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_productintegral", "multiscale_film_tracegreen_productintegral_lift", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_conservative_lift", "multiscale_film_tracegreen_kparam", "multiscale_film_tracegreen_kparam_lift", "multiscale_film_tracegreen_gammaparam", "multiscale_film_tracegreen_gammaparam_lift", "multiscale_film_tracegreen_kgparam", "multiscale_film_tracegreen_kgparam_lift", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
     parser.add_argument("--green-time-grid", type=int, default=256)
     parser.add_argument("--green-kernel-points", type=int, default=32)
