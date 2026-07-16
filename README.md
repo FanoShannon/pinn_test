@@ -73,17 +73,21 @@ $$
 D_A=D_B=D_C=D_D=1.
 $$
 
-三角波电位为
+下降扫描段 \(0\le t\le T_{\mathrm{sim}}/2\) 的电位为
 
 $$
-\theta(t)=
-\begin{cases}
-\theta_i-2(\theta_i-\theta_v)t/T_{\mathrm{sim}},
-&0\le t\le T_{\mathrm{sim}}/2,\\[4pt]
-\theta_v+2(\theta_i-\theta_v)
-(t-T_{\mathrm{sim}}/2)/T_{\mathrm{sim}},
-&T_{\mathrm{sim}}/2<t\le T_{\mathrm{sim}}.
-\end{cases}
+\theta(t)
+=\theta_i
+-2(\theta_i-\theta_v)\frac{t}{T_{\mathrm{sim}}}.
+$$
+
+回扫段 \(T_{\mathrm{sim}}/2<t\le T_{\mathrm{sim}}\) 的电位为
+
+$$
+\theta(t)
+=\theta_v
++2(\theta_i-\theta_v)
+\frac{t-T_{\mathrm{sim}}/2}{T_{\mathrm{sim}}}.
 $$
 
 实现位于 `potential_theta()`。网络特征可使用平滑的扫描方向
@@ -160,12 +164,10 @@ $$
 
 $$
 C_A(0,t)=\frac{e^{\theta}}{1+e^{\theta}}
-=\operatorname{sigmoid}(\theta),
 $$
 
 $$
 C_B(0,t)=\frac{1}{1+e^{\theta}}
-=\operatorname{sigmoid}(-\theta).
 $$
 
 代码中的 `_surface_state()` 直接使用该解析结果，不让界面网络学习 Nernst
@@ -237,7 +239,7 @@ $$
 
 $$
 \frac{Da_i}{1+Da_i}
-=\operatorname{sigmoid}(\log Da_i)
+=\frac{1}{1+\exp(-\log Da_i)}
 $$
 
 的 log-domain 形式，避免极小或极大 \(k_{\mathrm{cat}}C_{C,i}\) 下的数值问题。
@@ -424,7 +426,7 @@ $$
 从而造成界面浓度跳变。代码使用变量
 
 $$
-u=\operatorname{erfc}
+u=\mathrm{erfc}
 \left(
 \frac{y}{2\sqrt{D_D(t-\tau)}}
 \right)
@@ -435,7 +437,7 @@ $$
 $$
 \tau
 =t-\frac{y^2}
-{4D_D[\operatorname{erfc}^{-1}(u)]^2},
+{4D_D[\mathrm{erfc}^{-1}(u)]^2},
 $$
 
 并在 \(u\) 上积分，使
@@ -687,11 +689,11 @@ zero-shot 模式没有 optimizer step，所以 adapter 在整个参数域仍输�
 4. 对每个参数对重新计算 \(J_{\mathrm{ref}}\) 和 inventory lift；
 5. 固定网络只提供参考薄层剩余场。
 
-参数不是新的物理坐标，因此 PDE loss 不包含
+参数不是新的物理坐标，因此 PDE loss 不对下面两个参数方向求导：
 
 $$
-\frac{\partial C}{\partial k}
-\quad\text{或}\quad
+\frac{\partial C}{\partial k},
+\qquad
 \frac{\partial C}{\partial\gamma}.
 $$
 
@@ -827,7 +829,7 @@ Stage 1 checkpoint warm-start 到
 | Newton projection | \(s\leftarrow s-F/F'\) | `_product_integral_d_j_d_c_d()`, `_history_grid()` |
 | gamma-normalized PI | \(d=C_D/\gamma\) | `InterfaceStateNet_v9_6_FilmTraceGammaParam`, `InterfaceStateNet_v9_6_FilmTraceKGParam` |
 | 外域 Dirichlet Green 势 | 热方程 Poisson kernel | `trace_boundary_convolution_fused()` |
-| erfc trace preservation | \(u=\operatorname{erfc}[y/(2\sqrt{D\Delta t})]\) | `ExternalNet_v9_6_MultiscaleGreenGridFilmTrace` |
+| erfc trace preservation | \(u=\mathrm{erfc}[y/(2\sqrt{D\Delta t})]\) | `ExternalNet_v9_6_MultiscaleGreenGridFilmTrace` |
 | 远场端点修正 | \(C_D^G-h_{01}C_D^G(L)\) | `tracegreen_lift_and_residual()` |
 | 最终纯 TraceGreen | \(R_{\rm smooth}=0\) | `ExternalNet_v9_6_FilmTraceGreenClean` |
 | 薄层 Hermite 场 | \(h_{00},h_{10},h_{01},h_{11}\) | `hermite_cubic_basis()`, `ThinLayerNet_v9_6_MultiscaleHermite` |
