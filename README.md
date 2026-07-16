@@ -1,97 +1,82 @@
-# ProductIntegral reference reproduction
+# ProductIntegral Direct
 
-This branch freezes the original `codex/highgamma-product-integral` model code
-and reproduces the checkpoint family that produced the strong zero-shot k/gamma
-posterior results. It is deliberately separate from the minimal ablation branch.
+This branch contains one supported workflow:
 
-The actual training chain has three trainable phases, followed by a zero-training
-lift:
+```text
+Dynamic Stage 1
+-> ProductIntegral 300 epochs
+-> zero-training inventory lift
+```
 
-1. `multiscale_green_grid_dynamic_stage1`, up to 5000 epochs.
-2. `multiscale_film_tracegreen_clean`, up to 1500 epochs.
-3. `multiscale_film_tracegreen_productintegral`, 300 added epochs.
-4. `multiscale_film_tracegreen_productintegral_lift`, zero optimizer steps.
-
-FDM is used only for posterior reports. It is not part of any loss, physics early
-stop, or checkpoint selection.
+There is no trainable Clean stage. FDM is used only by the final posterior
+comparison and never enters a loss, early stopping, or checkpoint selection.
 
 ## Colab
 
 ```python
 from google.colab import drive
-drive.mount('/content/gdrive')
+drive.mount("/content/gdrive")
 ```
 
 ```bash
-!git clone -b codex/productintegral-reference-reproduction --single-branch \
-  https://github.com/FanoShannon/pinn_test.git /content/pinn_reference
-%cd /content/pinn_reference
+!git clone -b codex/productintegral-direct-clean --single-branch \
+  https://github.com/FanoShannon/pinn_test.git \
+  /content/pinn_productintegral_direct
+%cd /content/pinn_productintegral_direct
 ```
 
-Fill only these values:
+Set the physical parameters and matching posterior FDM:
 
 ```python
 K_CAT = 1.0
 GAMMA = 10.0
-FDM_PKL = "/content/gdrive/MyDrive/FDM_kg_v42/kg_k1_g10_v42_thin_layer_catalytic_v42.pkl"
+FDM_PKL = (
+    "/content/gdrive/MyDrive/FDM_kg_v42/"
+    "kg_k1_g10_v42_thin_layer_catalytic_v42.pkl"
+)
 ```
 
-Run the complete reference chain:
+Train the complete direct chain:
 
 ```bash
 !K_CAT={K_CAT} GAMMA={GAMMA} FDM_PKL={FDM_PKL} \
-  bash ./run_colab_reference.sh
+  bash ./run_colab_productintegral_direct.sh
+```
+
+To reuse an existing Dynamic Stage 1 checkpoint, add only `STAGE1_BEST`:
+
+```bash
+!K_CAT={K_CAT} GAMMA={GAMMA} FDM_PKL={FDM_PKL} \
+STAGE1_BEST="/content/gdrive/MyDrive/pinn_v96_reference/reference_k1.0_gamma10.0/clean_two_stage/stage1_dynamic_fixed/checkpoints/pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_dynamic_stage1_best.pth" \
+bash ./run_colab_productintegral_direct.sh
+```
+
+## Outputs
+
+Default root:
+
+```text
+/content/gdrive/MyDrive/pinn_v96_productintegral_direct/direct_k1.0_gamma10.0
 ```
 
 Final ProductIntegral checkpoint:
 
 ```text
-/content/gdrive/MyDrive/pinn_v96_reference/reference_k1.0_gamma10.0/productintegral_300/checkpoints/pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_productintegral_best.pth
+productintegral_300/checkpoints/pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_productintegral_best.pth
 ```
 
-Final fixed-case lift metrics:
+Final posterior metrics:
 
 ```text
-/content/gdrive/MyDrive/pinn_v96_reference/reference_k1.0_gamma10.0/final_productintegral_lift/reference_lift_metrics.json
+final_inventory_lift/metrics.json
 ```
 
-The default disables periodic FDM comparisons to save time. This does not alter
-training because those comparisons were posterior-only. Set
-`FDM_COMPARE_EVERY=250` only when intermediate posterior figures are desired.
-
-## Direct Stage 1 to ProductIntegral
-
-After the three-stage reference run has produced its Dynamic Stage 1
-checkpoint, reproduce the original direct chain without retraining Stage 1:
-
-```bash
-!K_CAT=1.0 GAMMA=10.0 \
-FDM_PKL=/content/gdrive/MyDrive/FDM_kg_v42/kg_k1_g10_v42_thin_layer_catalytic_v42.pkl \
-bash ./run_colab_reference_direct_from_stage1.sh
-```
-
-The direct run reads:
+Automatic comparison with the historical epoch-2400 best:
 
 ```text
-/content/gdrive/MyDrive/pinn_v96_reference/reference_k1.0_gamma10.0/clean_two_stage/stage1_dynamic_fixed/checkpoints/pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_dynamic_stage1_best.pth
+final_inventory_lift/reproduction_vs_historical_best.json
 ```
 
-and writes a separate final checkpoint:
-
-```text
-/content/gdrive/MyDrive/pinn_v96_reference_direct/reference_k1.0_gamma10.0/productintegral_300_from_stage1/checkpoints/pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_productintegral_best.pth
-```
-
-The final inventory-lift metrics are:
-
-```text
-/content/gdrive/MyDrive/pinn_v96_reference_direct/reference_k1.0_gamma10.0/final_productintegral_lift/reference_direct_lift_metrics.json
-```
-
-The runner automatically compares the direct result with the historical
-epoch-2400 best and, when present, the three-stage reproduction. The comparison
-is saved to:
-
-```text
-/content/gdrive/MyDrive/pinn_v96_reference_direct/reference_k1.0_gamma10.0/final_productintegral_lift/reference_direct_vs_best.json
-```
+The retained internal `FilmTraceClean` class names are checkpoint-compatible
+physical base implementations used by ProductIntegral. They are not exposed as
+a trainable architecture or workflow.
