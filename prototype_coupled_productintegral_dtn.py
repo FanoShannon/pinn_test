@@ -15,26 +15,48 @@ import pinn_thin_layer_v9_6 as pinn
 
 def triangular_protocol(time):
     time = np.asarray(time, dtype=np.float64)
-    switch_time = float(pinn.T_switch * pinn.T_sim)
+    simulation_time = float(time[-1])
+    if simulation_time <= 0.0:
+        raise ValueError("The final protocol time must be positive")
+    switch_time = float(pinn.T_switch * simulation_time)
     theta = np.where(
         time <= switch_time,
         float(pinn.theta_i)
         -2.0 * float(pinn.theta_i - pinn.theta_switch)
-        * time / float(pinn.T_sim),
+        * time / simulation_time,
         float(pinn.theta_switch)
         +2.0 * float(pinn.theta_i - pinn.theta_switch)
-        * (time - switch_time) / float(pinn.T_sim),
+        * (time - switch_time) / simulation_time,
     )
     c_b_surface = 1.0 / (1.0 + np.exp(theta))
     return theta, c_b_surface
 
 
-def validate_fdm_parameters(fdm, gamma, k_cat):
+def characteristic_reaction_flux(gamma, k_cat, delta, diffusion_b):
+    """Film-limited flux scale for one runtime parameter tuple."""
+    return (float(k_cat) * float(gamma)) / (
+        1.0
+        +float(k_cat) * float(gamma) * float(delta) / float(diffusion_b)
+    )
+
+
+def validate_positive_parameters(gamma, k_cat, delta):
+    values = {
+        "gamma": float(gamma),
+        "k_cat": float(k_cat),
+        "delta": float(delta),
+    }
+    for name, value in values.items():
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{name} must be finite and positive, got {value}")
+
+
+def validate_fdm_parameters(fdm, gamma, k_cat, delta):
     parameters = fdm.get("params", fdm.get("parameters", {}))
     expected = {
         "gamma": float(gamma),
         "k_cat": float(k_cat),
-        "delta": float(pinn.delta),
+        "delta": float(delta),
         "D_A": float(pinn.D_rel_A),
         "D_B": float(pinn.D_rel_B),
         "D_C": float(pinn.D_rel_C),
@@ -159,8 +181,17 @@ def reaction_closure_root(
     return value, iterations, float(abs(residual(value)))
 
 
-def solve_coupled_operator(time, gamma, k_cat, n_modes, newton_iterations):
+def solve_coupled_operator(
+    time,
+    gamma,
+    k_cat,
+    n_modes,
+    newton_iterations,
+    delta=None,
+):
     """Couple finite-slab DtN and external Abel ProductIntegral cell by cell."""
+    delta = float(pinn.delta if delta is None else delta)
+    validate_positive_parameters(gamma, k_cat, delta)
     if not np.isclose(pinn.D_rel_A, pinn.D_rel_B, rtol=0.0, atol=1e-14):
         raise NotImplementedError(
             "The C_A=1-C_B reduction requires D_A=D_B"
@@ -179,7 +210,7 @@ def solve_coupled_operator(time, gamma, k_cat, n_modes, newton_iterations):
 
     diffusion_b = float(pinn.D_rel_B)
     diffusion_d = float(pinn.D_rel_D)
-    thickness = float(pinn.delta)
+    thickness = delta
     theta, surface = triangular_protocol(time)
 
     mode_index = np.arange(n_modes, dtype=np.float64)
@@ -252,6 +283,14 @@ def solve_coupled_operator(time, gamma, k_cat, n_modes, newton_iterations):
         c_d_int[step] = gamma - c_c_int[step]
 
     return {
+        "gamma": float(gamma),
+        "k_cat": float(k_cat),
+        "delta": thickness,
+        "D_B": diffusion_b,
+        "D_D": diffusion_d,
+        "external_length": float(
+            pinn.X_ext_factor * np.sqrt(float(time[-1]))
+        ),
         "time": time,
         "theta": theta,
         "C_B_surface": surface,
@@ -268,9 +307,13 @@ def solve_coupled_operator(time, gamma, k_cat, n_modes, newton_iterations):
 
 
 def reconstruct_state(history, x_eval):
-    diffusion = float(pinn.D_rel_B)
-    thickness = float(pinn.delta)
+    diffusion = float(history["D_B"])
+    thickness = float(history["delta"])
     x_eval = np.asarray(x_eval, dtype=np.float64)
+    if np.min(x_eval) < -1e-12 or np.max(x_eval) > thickness + 1e-12:
+        raise ValueError(
+            f"Thin evaluation coordinates must lie in [0, {thickness}]"
+        )
     basis = np.sin(np.outer(x_eval, history["mu"]))
     field = (
         history["C_B_surface"][:, None]
@@ -332,12 +375,29 @@ def interpolate_time_series(source_time, values, target_time):
     return interpolated.reshape((len(target_time),) + values.shape[1:])
 
 
+def fdm_thin_balance_current(fdm):
+    """Recover electrode current from the FDM thin-layer mass balance."""
+    time = np.asarray(fdm["t"], dtype=np.float64)
+    x_in = np.asarray(fdm["x_in"], dtype=np.float64)
+    c_b = np.asarray(
+        fdm["concentrations"]["C_B"],
+        dtype=np.float64,
+    )
+    reaction = np.asarray(fdm["R"], dtype=np.float64)
+    inventory = np.trapezoid(c_b, x_in, axis=1)
+    inventory_dt = np.gradient(inventory, time, edge_order=2)
+    current = -reaction - inventory_dt
+    current[0] = 0.0
+    return current
+
+
 def tracegreen_external_field(
     history,
     time_eval,
     x_eval,
     kernel_points,
     batch_size,
+    quadrature="gauss-legendre",
 ):
     """Propagate the solved interface trace with the erfc heat potential."""
     time_eval = np.asarray(time_eval, dtype=np.float64)
@@ -345,24 +405,39 @@ def tracegreen_external_field(
     tt, xx = np.meshgrid(time_eval, x_eval, indexing="ij")
     flat_time = tt.reshape(-1)
     flat_y = np.clip(
-        xx.reshape(-1) - float(pinn.delta),
+        xx.reshape(-1) - float(history["delta"]),
         0.0,
-        float(pinn.X_ext_max - pinn.delta),
+        float(history["external_length"]),
     )
     history_grid = torch.as_tensor(
         history["C_D_int"],
         dtype=torch.float64,
     )
-    nodes = (
-        torch.arange(kernel_points, dtype=torch.float64) + 0.5
-    ) / float(kernel_points)
-    diffusion = float(pinn.D_rel_D)
-    ext_length = float(pinn.X_ext_max - pinn.delta)
+    simulation_time = float(history["time"][-1])
+    if quadrature == "midpoint":
+        nodes = (
+            torch.arange(kernel_points, dtype=torch.float64) + 0.5
+        ) / float(kernel_points)
+        weights = torch.full(
+            (kernel_points,),
+            1.0 / float(kernel_points),
+            dtype=torch.float64,
+        )
+    elif quadrature == "gauss-legendre":
+        raw_nodes, raw_weights = np.polynomial.legendre.leggauss(kernel_points)
+        nodes = torch.from_numpy(0.5 * (raw_nodes + 1.0))
+        weights = torch.from_numpy(0.5 * raw_weights)
+    else:
+        raise ValueError(
+            "quadrature must be 'gauss-legendre' or 'midpoint'"
+        )
+    diffusion = float(history["D_D"])
+    ext_length = float(history["external_length"])
     output = np.empty_like(flat_time)
 
     def interpolate_history(tau):
-        tau = torch.clamp(tau, 0.0, float(pinn.T_sim))
-        coordinate = tau * (len(history_grid) - 1) / float(pinn.T_sim)
+        tau = torch.clamp(tau, 0.0, simulation_time)
+        coordinate = tau * (len(history_grid) - 1) / simulation_time
         left = torch.floor(coordinate).to(torch.long)
         left = torch.clamp(left, 0, len(history_grid) - 2)
         right = left + 1
@@ -372,7 +447,10 @@ def tracegreen_external_field(
         )
 
     def heat_trace(t_value, y_value):
-        t_positive = torch.clamp(t_value, min=1e-6 * float(pinn.T_sim))
+        t_positive = torch.clamp(
+            t_value,
+            min=1e-6 * simulation_time,
+        )
         trace_mass = torch.erfc(
             y_value / torch.sqrt(4.0 * diffusion * t_positive)
         )
@@ -389,9 +467,12 @@ def tracegreen_external_field(
         tau = torch.clamp(
             t_value[:, None] - delay,
             0.0,
-            float(pinn.T_sim),
+            simulation_time,
         )
-        trace = trace_mass * torch.mean(interpolate_history(tau), dim=1)
+        trace = trace_mass * torch.sum(
+            interpolate_history(tau) * weights[None, :],
+            dim=1,
+        )
         interface = interpolate_history(t_value)
         return torch.where(y_value <= 1e-12, interface, trace)
 
@@ -410,7 +491,7 @@ def tracegreen_external_field(
         output[start:stop] = corrected.numpy()
 
     c_d = output.reshape(len(time_eval), len(x_eval))
-    c_c = float(pinn.gamma) - c_d
+    c_c = float(history["gamma"]) - c_d
     return c_c, c_d
 
 
@@ -423,6 +504,7 @@ def evaluate(
     cv_points,
     green_kernel_points,
     trace_batch_size,
+    green_quadrature="gauss-legendre",
 ):
     time = history["time"]
     fdm_time = np.asarray(fdm["t"], dtype=np.float64)
@@ -458,6 +540,11 @@ def evaluate(
         np.asarray(fdm["J"], dtype=np.float64),
         current_times,
     )
+    fdm_balance_current = interpolate_time_series(
+        fdm_time,
+        fdm_thin_balance_current(fdm),
+        current_times,
+    )
     fdm_reaction = interpolate_time_series(
         fdm_time,
         np.asarray(fdm["R"], dtype=np.float64),
@@ -483,6 +570,7 @@ def evaluate(
         x_out_eval,
         green_kernel_points,
         trace_batch_size,
+        quadrature=green_quadrature,
     )
 
     predicted_current = state["J_surface"][cv_indices].copy()
@@ -491,7 +579,14 @@ def evaluate(
     predicted_current[0] = 0.0
     predicted_centered[0] = 0.0
     predicted_backward[0] = 0.0
-    j_ref = float(pinn.characteristic_reaction_flux())
+    gamma = float(history["gamma"])
+    k_cat = float(history["k_cat"])
+    j_ref = characteristic_reaction_flux(
+        gamma,
+        k_cat,
+        history["delta"],
+        history["D_B"],
+    )
 
     metrics = {
         "C_A": compare_fields.field_metrics(1.0 - state["C_B"][time_indices], 1.0 - fdm_b),
@@ -505,18 +600,18 @@ def evaluate(
             fdm_c_c_int,
         ),
         "C_C_int_over_gamma": compare_fields.field_metrics(
-            history["C_C_int"][time_indices] / float(pinn.gamma),
-            fdm_c_c_int / float(pinn.gamma),
+            history["C_C_int"][time_indices] / gamma,
+            fdm_c_c_int / gamma,
         ),
         "C_C": compare_fields.field_metrics(predicted_c, fdm_c),
         "C_D": compare_fields.field_metrics(predicted_d, fdm_d),
         "C_C_over_gamma": compare_fields.field_metrics(
-            predicted_c / float(pinn.gamma),
-            fdm_c / float(pinn.gamma),
+            predicted_c / gamma,
+            fdm_c / gamma,
         ),
         "C_D_over_gamma": compare_fields.field_metrics(
-            predicted_d / float(pinn.gamma),
-            fdm_d / float(pinn.gamma),
+            predicted_d / gamma,
+            fdm_d / gamma,
         ),
         "J_rxn": compare_fields.field_metrics(
             history["J_rxn"][time_indices],
@@ -526,9 +621,19 @@ def evaluate(
             predicted_current,
             fdm_current,
         ),
+        "CV_J_surface_vs_FDM_thin_balance": compare_fields.field_metrics(
+            predicted_current,
+            fdm_balance_current,
+        ),
         "CV_J_inventory_centered": compare_fields.field_metrics(
             predicted_centered,
             fdm_current,
+        ),
+        "CV_J_inventory_centered_vs_FDM_thin_balance": (
+            compare_fields.field_metrics(
+                predicted_centered,
+                fdm_balance_current,
+            )
         ),
         "CV_J_inventory_backward": compare_fields.field_metrics(
             predicted_backward,
@@ -537,6 +642,12 @@ def evaluate(
         "CV_J_surface_over_J_ref": compare_fields.field_metrics(
             predicted_current / j_ref,
             fdm_current / j_ref,
+        ),
+        "CV_J_surface_vs_FDM_thin_balance_over_J_ref": (
+            compare_fields.field_metrics(
+                predicted_current / j_ref,
+                fdm_balance_current / j_ref,
+            )
         ),
         "CV_J_inventory_centered_over_J_ref": compare_fields.field_metrics(
             predicted_centered / j_ref,
@@ -554,9 +665,19 @@ def evaluate(
             predicted_current / j_ref,
             predicted_backward / j_ref,
         ),
+        "FDM_surface_vs_thin_balance": compare_fields.field_metrics(
+            fdm_current,
+            fdm_balance_current,
+        ),
+        "FDM_surface_vs_thin_balance_over_J_ref": (
+            compare_fields.field_metrics(
+                fdm_current / j_ref,
+                fdm_balance_current / j_ref,
+            )
+        ),
         "reaction_closure_max_abs": float(np.max(np.abs(
             history["J_rxn"]
-            -float(pinn.k_cat_star)
+            -k_cat
             *history["C_B_int"]
             *history["C_C_int"]
         ))),
@@ -576,8 +697,8 @@ def evaluate(
                             -(1.0 - fdm_b)
                         ) ** 2
                     )
-                    +np.sum(((predicted_c - fdm_c) / float(pinn.gamma)) ** 2)
-                    +np.sum(((predicted_d - fdm_d) / float(pinn.gamma)) ** 2)
+                    +np.sum(((predicted_c - fdm_c) / gamma) ** 2)
+                    +np.sum(((predicted_d - fdm_d) / gamma) ** 2)
                 )
                 /(
                     2 * state["C_B"][time_indices].size
@@ -593,6 +714,7 @@ def evaluate(
         "_x_indices": x_indices,
         "_x_out_indices": x_out_indices,
         "_cv_indices": cv_indices,
+        "_fdm_balance_current": fdm_balance_current,
     }
     return metrics
 
@@ -673,6 +795,13 @@ def plot_diagnostics(output_dir, fdm, history, metrics):
     )
     axes[1, 0].plot(
         history["theta"][cv_indices],
+        metrics["_fdm_balance_current"],
+        label="FDM thin-balance current",
+        linewidth=1.5,
+        alpha=0.8,
+    )
+    axes[1, 0].plot(
+        history["theta"][cv_indices],
         state["J_surface"][cv_indices],
         label="coupled DtN surface",
         linestyle="--",
@@ -692,7 +821,7 @@ def plot_diagnostics(output_dir, fdm, history, metrics):
     axes[1, 1].plot(
         time,
         history["J_rxn"]
-        -float(pinn.k_cat_star)
+        -float(history["k_cat"])
         *history["C_B_int"]
         *history["C_C_int"],
     )
@@ -729,6 +858,7 @@ def parse_args():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--gamma", type=float, default=10.0)
     parser.add_argument("--k-cat", type=float, default=1.0)
+    parser.add_argument("--delta", type=float, default=float(pinn.delta))
     parser.add_argument("--operator-time-grid", type=int, default=256)
     parser.add_argument("--mode-counts", default="32,64,128,256")
     parser.add_argument("--newton-iterations", type=int, default=12)
@@ -737,6 +867,11 @@ def parse_args():
     parser.add_argument("--n-x-out", type=int, default=120)
     parser.add_argument("--cv-points", type=int, default=2000)
     parser.add_argument("--green-kernel-points", type=int, default=64)
+    parser.add_argument(
+        "--green-quadrature",
+        choices=("gauss-legendre", "midpoint"),
+        default="gauss-legendre",
+    )
     parser.add_argument("--trace-batch-size", type=int, default=4096)
     return parser.parse_args()
 
@@ -750,10 +885,11 @@ def main():
         gamma_value=args.gamma,
         k_cat_value=args.k_cat,
     )
+    validate_positive_parameters(args.gamma, args.k_cat, args.delta)
 
     with args.fdm_pkl.open("rb") as handle:
         fdm = pickle.load(handle)
-    validate_fdm_parameters(fdm, args.gamma, args.k_cat)
+    validate_fdm_parameters(fdm, args.gamma, args.k_cat, args.delta)
     if args.operator_time_grid < 3:
         raise ValueError("operator-time-grid must be at least 3")
     time = np.linspace(
@@ -772,6 +908,7 @@ def main():
             args.k_cat,
             n_modes,
             args.newton_iterations,
+            delta=args.delta,
         )
         metrics = evaluate(
             fdm,
@@ -782,6 +919,7 @@ def main():
             args.cv_points,
             args.green_kernel_points,
             args.trace_batch_size,
+            args.green_quadrature,
         )
         all_metrics[str(n_modes)] = serializable_metrics(metrics)
         retained_history = history
@@ -806,10 +944,11 @@ def main():
         "spatial_grid_in_operator": False,
         "operator_time_grid": int(args.operator_time_grid),
         "green_kernel_points": int(args.green_kernel_points),
+        "green_quadrature": args.green_quadrature,
         "parameters": {
-            "gamma": float(pinn.gamma),
-            "k_cat": float(pinn.k_cat_star),
-            "delta": float(pinn.delta),
+            "gamma": float(args.gamma),
+            "k_cat": float(args.k_cat),
+            "delta": float(args.delta),
             "D_B": float(pinn.D_rel_B),
             "D_D": float(pinn.D_rel_D),
         },

@@ -1,5 +1,23 @@
 # ProductIntegral Direct
 
+## k/gamma/delta Study
+
+The zero-training finite-slab DtN operator now accepts runtime `k_cat`,
+`gamma`, and `delta`, includes higher-accuracy Gauss-Legendre TraceGreen
+quadrature, and has a differentiable delta-inversion prototype.
+
+See [KGDELTA_FORWARD_INVERSE_REPORT.md](KGDELTA_FORWARD_INVERSE_REPORT.md) for
+the equations, FDM-separated validation, error decomposition, inversion
+results, and identifiability limits.
+
+Colab can run the FDM-free study with:
+
+```bash
+OUTPUT_DIR="/content/gdrive/MyDrive/pinn_v96_delta_research" \
+MODE=all \
+bash ./run_colab_delta_forward_inverse.sh
+```
+
 本分支是当前 PINN v9.6 的精简主线，只保留两条可复现实验流程：
 
 ```text
