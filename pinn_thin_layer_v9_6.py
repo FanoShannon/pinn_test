@@ -462,18 +462,10 @@ MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_TRACEGREEN_MATCHEDABEL_PATH 
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_TRACEGREEN_MATCHEDABEL_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel_best.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_TRACEGREEN_MIXEDABEL_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel.pth'
 MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_TRACEGREEN_MIXEDABEL_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel_best.pth'
-MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean.pth'
-MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_best.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_productintegral.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_productintegral_best.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_LIFT_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_productintegral_lift.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_LIFT_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_productintegral_lift_best.pth'
-MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_CONSERVATIVE_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_conservative.pth'
-MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_CONSERVATIVE_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_conservative_best.pth'
-MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_MIXEDFLUX_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_mixedflux.pth'
-MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_MIXEDFLUX_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_clean_mixedflux_best.pth'
-MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CONSERVATIVE_LIFT_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_conservative_lift.pth'
-MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CONSERVATIVE_LIFT_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_conservative_lift_best.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_kparam.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_KPARAM_BEST_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_kparam_best.pth'
 MODEL_V96_MULTISCALE_FILM_TRACEGREEN_GAMMAPARAM_PATH = './pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_gammaparam.pth'
@@ -563,24 +555,12 @@ def resolve_checkpoint_paths(arch, checkpoint_dir=None):
     elif arch == "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel":
         current_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_TRACEGREEN_MIXEDABEL_PATH
         best_path = MODEL_V96_MULTISCALE_GREEN_GRID_FILM_ABEL_KERNELMIX_TRACEGREEN_MIXEDABEL_BEST_PATH
-    elif arch == "multiscale_film_tracegreen_clean":
-        current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_PATH
-        best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_BEST_PATH
     elif arch == "multiscale_film_tracegreen_productintegral":
         current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_PATH
         best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_BEST_PATH
     elif arch == "multiscale_film_tracegreen_productintegral_lift":
         current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_LIFT_PATH
         best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_PRODUCTINTEGRAL_LIFT_BEST_PATH
-    elif arch == "multiscale_film_tracegreen_clean_conservative":
-        current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_CONSERVATIVE_PATH
-        best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_CONSERVATIVE_BEST_PATH
-    elif arch == "multiscale_film_tracegreen_clean_mixedflux":
-        current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_MIXEDFLUX_PATH
-        best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CLEAN_MIXEDFLUX_BEST_PATH
-    elif arch == "multiscale_film_tracegreen_conservative_lift":
-        current_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CONSERVATIVE_LIFT_PATH
-        best_path = MODEL_V96_MULTISCALE_FILM_TRACEGREEN_CONSERVATIVE_LIFT_BEST_PATH
     elif arch in {
         "multiscale_film_tracegreen_kparam",
         "multiscale_film_tracegreen_kparam_lift",
@@ -5218,24 +5198,6 @@ def create_models_v96(
                 cache_history=green_cache_history,
             ),
         )
-    if arch == "multiscale_film_tracegreen_clean":
-        interface_state = InterfaceStateNet_v9_6_FilmTraceClean(
-            normalize_inputs=normalize_inputs,
-            time_grid_points=green_time_grid,
-            kernel_points=green_kernel_points,
-        )
-        return (
-            ThinLayerNet_v9_6_MultiscaleHermite(interface_state=interface_state, normalize_inputs=normalize_inputs),
-            ExternalNet_v9_6_FilmTraceGreenClean(
-                gamma,
-                interface_state=interface_state,
-                normalize_inputs=normalize_inputs,
-                time_grid_points=green_time_grid,
-                kernel_points=green_kernel_points,
-                history_grad=green_history_grad,
-                cache_history=green_cache_history,
-            ),
-        )
     if arch == "multiscale_film_tracegreen_productintegral":
         interface_state = InterfaceStateNet_v9_6_FilmTraceProductIntegral(
             normalize_inputs=normalize_inputs,
@@ -5269,40 +5231,6 @@ def create_models_v96(
                 normalize_inputs=normalize_inputs,
                 lift_time_grid_points=lift_time_grid,
             ),
-            ExternalNet_v9_6_FilmTraceGreenClean(
-                gamma,
-                interface_state=interface_state,
-                normalize_inputs=normalize_inputs,
-                time_grid_points=green_time_grid,
-                kernel_points=green_kernel_points,
-                history_grad=green_history_grad,
-                cache_history=green_cache_history,
-            ),
-        )
-    if arch in {
-        "multiscale_film_tracegreen_clean_conservative",
-        "multiscale_film_tracegreen_clean_mixedflux",
-        "multiscale_film_tracegreen_conservative_lift",
-    }:
-        interface_state = InterfaceStateNet_v9_6_FilmTraceClean(
-            normalize_inputs=normalize_inputs,
-            time_grid_points=green_time_grid,
-            kernel_points=green_kernel_points,
-        )
-        if arch.endswith("mixedflux"):
-            thin_class = ThinLayerNet_v9_6_MultiscaleHermiteMixedFlux
-        elif arch.endswith("conservative_lift"):
-            thin_class = ThinLayerNet_v9_6_InventoryHermiteLift
-        else:
-            thin_class = ThinLayerNet_v9_6_MultiscaleHermiteConservative
-        thin_kwargs = {
-            "interface_state": interface_state,
-            "normalize_inputs": normalize_inputs,
-        }
-        if arch.endswith("conservative_lift"):
-            thin_kwargs["lift_time_grid_points"] = lift_time_grid
-        return (
-            thin_class(**thin_kwargs),
             ExternalNet_v9_6_FilmTraceGreenClean(
                 gamma,
                 interface_state=interface_state,
@@ -8496,7 +8424,17 @@ if __name__ == "__main__":
                         help="Fixed bulk C concentration ratio for this run.")
     parser.add_argument("--k-cat-star", type=float, default=REFERENCE_K_CAT_STAR,
                         help="Fixed catalytic reaction constant for this run.")
-    parser.add_argument("--arch", choices=["legacy", "multiscale", "multiscale_hardbc", "his_pinn", "his_pinn_ext", "multiscale_hermite", "multiscale_hermite_extbasis", "multiscale_green", "multiscale_green_grid", "multiscale_green_grid_hybrid", "multiscale_green_grid_dynamic", "multiscale_green_grid_dynamic_stage1", "multiscale_green_grid_interface_memory", "multiscale_green_grid_memory", "multiscale_green_grid_film_abel", "multiscale_green_grid_film_abel_kernelmix", "multiscale_green_grid_film_abel_kernelmix_causal", "multiscale_green_grid_film_abel_kernelmix_causalconv", "multiscale_green_grid_film_abel_kernelmix_causalhybrid", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_smooth", "multiscale_green_grid_film_abel_kernelmix_causalhybrid_intmemory", "multiscale_green_grid_film_abel_kernelmix_fluxtrace", "multiscale_green_grid_film_abel_kernelmix_tracegreen", "multiscale_green_grid_film_abel_kernelmix_tracegreen_matchedabel", "multiscale_green_grid_film_abel_kernelmix_tracegreen_mixedabel", "multiscale_film_tracegreen_clean", "multiscale_film_tracegreen_productintegral", "multiscale_film_tracegreen_productintegral_lift", "multiscale_film_tracegreen_clean_conservative", "multiscale_film_tracegreen_clean_mixedflux", "multiscale_film_tracegreen_conservative_lift", "multiscale_film_tracegreen_kparam", "multiscale_film_tracegreen_kparam_lift", "multiscale_film_tracegreen_gammaparam", "multiscale_film_tracegreen_gammaparam_lift", "multiscale_film_tracegreen_kgparam", "multiscale_film_tracegreen_kgparam_lift", "multiscale_green_grid_film_abel_ema", "multiscale_buffer"], default="legacy")
+    parser.add_argument(
+        "--arch",
+        choices=[
+            "multiscale_green_grid_dynamic_stage1",
+            "multiscale_film_tracegreen_productintegral",
+            "multiscale_film_tracegreen_productintegral_lift",
+            "multiscale_film_tracegreen_kgparam",
+            "multiscale_film_tracegreen_kgparam_lift",
+        ],
+        default="multiscale_film_tracegreen_productintegral",
+    )
     parser.add_argument("--green-time-grid", type=int, default=256,
                         help="Global history time-grid size for multiscale_green_grid.")
     parser.add_argument("--green-kernel-points", type=int, default=32,
@@ -8548,9 +8486,9 @@ if __name__ == "__main__":
     parser.add_argument("--learning-rate", type=float, default=5e-5,
                         help="Initial AdamW learning rate.")
     parser.add_argument("--clean-residual-initial-scale", type=float, default=0.0,
-                        help="Initial R_smooth scaffold scale for multiscale_film_tracegreen_clean.")
+                        help="Compatibility control for the ProductIntegral external residual; keep at zero.")
     parser.add_argument("--clean-residual-decay-epochs", type=int, default=0,
-                        help="Epochs over which the clean R_smooth scaffold decays linearly to zero.")
+                        help="Compatibility control for old checkpoints; keep at zero.")
     parser.add_argument("--current-balance-weight", type=float, default=None,
                         help="Final thin inventory-current consistency weight; architecture-aware by default.")
     parser.add_argument("--current-balance-ramp-epochs", type=int, default=100,

@@ -1,11 +1,16 @@
 # ProductIntegral Direct
 
-This branch contains one supported workflow:
+This branch contains two supported workflows:
 
 ```text
 Dynamic Stage 1
 -> ProductIntegral 300 epochs
 -> zero-training inventory lift
+
+fixed ProductIntegral checkpoint
+-> joint k/gamma physical conditioning
+-> zero-training inventory lift
+-> posterior-only FDM comparison
 ```
 
 There is no trainable Clean stage. FDM is used only by the final posterior
@@ -80,3 +85,29 @@ final_inventory_lift/reproduction_vs_historical_best.json
 The retained internal `FilmTraceClean` class names are checkpoint-compatible
 physical base implementations used by ProductIntegral. They are not exposed as
 a trainable architecture or workflow.
+
+## Joint k/gamma zero-training posterior
+
+No parameter training is required. The fixed ProductIntegral network is loaded
+as the reference backbone, while the ProductIntegral/TraceGreen physical chain
+is evaluated at each positive `k` and `gamma`. Inventory lift is mandatory.
+FDM files are read only after the frozen prediction is produced.
+
+```python
+CHECKPOINT = (
+    "/content/gdrive/MyDrive/pinn_v96_productintegral_direct/"
+    "direct_k1.0_gamma10.0/productintegral_300/checkpoints/"
+    "pinn_thin_layer_catalytic_v9_6_"
+    "multiscale_film_tracegreen_productintegral_best.pth"
+)
+```
+
+```bash
+!CHECKPOINT="{CHECKPOINT}" \
+FDM_DIR="/content/gdrive/MyDrive/FDM_kg_v42" \
+bash ./run_colab_kg_posterior.sh
+```
+
+The script discovers the 17 established FDM cases, writes per-case metrics and
+`kg_parameter_summary.json`, then compares aggregate mean/worst errors with the
+historical zero-shot + lift result in `kg_vs_historical.json`.
