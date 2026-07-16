@@ -87,3 +87,11 @@ The final inventory-lift metrics are:
 ```text
 /content/gdrive/MyDrive/pinn_v96_reference_direct/reference_k1.0_gamma10.0/final_productintegral_lift/reference_direct_lift_metrics.json
 ```
+
+The runner automatically compares the direct result with the historical
+epoch-2400 best and, when present, the three-stage reproduction. The comparison
+is saved to:
+
+```text
+/content/gdrive/MyDrive/pinn_v96_reference_direct/reference_k1.0_gamma10.0/final_productintegral_lift/reference_direct_vs_best.json
+```

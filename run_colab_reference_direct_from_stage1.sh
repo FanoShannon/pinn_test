@@ -14,6 +14,7 @@ STAGE1_BEST="${STAGE1_BEST:-${REFERENCE_ROOT}/clean_two_stage/stage1_dynamic_fix
 RUN_ROOT="${RUN_ROOT:-/content/gdrive/MyDrive/pinn_v96_reference_direct/reference_k${K_CAT}_gamma${GAMMA}}"
 PRODUCT_ROOT="$RUN_ROOT/productintegral_300_from_stage1"
 FINAL_ROOT="$RUN_ROOT/final_productintegral_lift"
+THREE_STAGE_METRICS="${THREE_STAGE_METRICS:-${REFERENCE_ROOT}/final_productintegral_lift/reference_lift_metrics.json}"
 
 [[ -f "$STAGE1_BEST" ]] || {
     echo "Missing Dynamic Stage 1 best: $STAGE1_BEST" >&2
@@ -51,7 +52,97 @@ echo "Direct reference phase 2/2: zero-training inventory lift posterior"
   --output-figure "$FINAL_ROOT/reference_direct_lift_residual.png" \
   --output-current-figure "$FINAL_ROOT/reference_direct_lift_current.png"
 
+DIRECT_METRICS="$FINAL_ROOT/reference_direct_lift_metrics.json"
+COMPARISON_JSON="$FINAL_ROOT/reference_direct_vs_best.json"
+"$PYTHON" - "$DIRECT_METRICS" "$THREE_STAGE_METRICS" "$COMPARISON_JSON" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+direct_path = Path(sys.argv[1])
+three_stage_path = Path(sys.argv[2])
+output_path = Path(sys.argv[3])
+
+direct = json.loads(direct_path.read_text(encoding="utf-8"))
+direct_overall = float(direct["overall_dimensionless"]["rmse"])
+direct_cv = float(direct["CV_J_over_J_ref"]["rmse"])
+
+historical = {
+    "overall_dimensionless_rmse": 6.522669005881162e-4,
+    "CV_J_over_J_ref_rmse": 1.501318934104662e-3,
+}
+
+
+def compare(reference):
+    return {
+        "overall_dimensionless_rmse": {
+            "candidate": direct_overall,
+            "reference": reference["overall_dimensionless_rmse"],
+            "relative_change_percent": 100.0 * (
+                direct_overall / reference["overall_dimensionless_rmse"] - 1.0
+            ),
+        },
+        "CV_J_over_J_ref_rmse": {
+            "candidate": direct_cv,
+            "reference": reference["CV_J_over_J_ref_rmse"],
+            "relative_change_percent": 100.0 * (
+                direct_cv / reference["CV_J_over_J_ref_rmse"] - 1.0
+            ),
+        },
+    }
+
+
+result = {
+    "direct_metrics": str(direct_path),
+    "historical_epoch2400_best": compare(historical),
+}
+
+if three_stage_path.is_file():
+    three_stage = json.loads(three_stage_path.read_text(encoding="utf-8"))
+    three_stage_reference = {
+        "overall_dimensionless_rmse": float(
+            three_stage["overall_dimensionless"]["rmse"]
+        ),
+        "CV_J_over_J_ref_rmse": float(
+            three_stage["CV_J_over_J_ref"]["rmse"]
+        ),
+    }
+    result["three_stage_reference"] = {
+        "metrics": str(three_stage_path),
+        **compare(three_stage_reference),
+    }
+
+changes = [
+    abs(item["relative_change_percent"])
+    for item in result["historical_epoch2400_best"].values()
+]
+result["reproduction_status"] = {
+    "within_1_percent": max(changes) <= 1.0,
+    "within_3_percent": max(changes) <= 3.0,
+    "within_5_percent": max(changes) <= 5.0,
+}
+output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+print("\n=== Direct Stage1 -> ProductIntegral vs historical epoch-2400 best ===")
+for name, item in result["historical_epoch2400_best"].items():
+    print(
+        f"{name}: {item['candidate']:.9e} vs {item['reference']:.9e} "
+        f"({item['relative_change_percent']:+.3f}%)"
+    )
+if "three_stage_reference" in result:
+    print("\n=== Direct chain vs three-stage reproduction ===")
+    for name in ("overall_dimensionless_rmse", "CV_J_over_J_ref_rmse"):
+        item = result["three_stage_reference"][name]
+        print(
+            f"{name}: {item['candidate']:.9e} vs {item['reference']:.9e} "
+            f"({item['relative_change_percent']:+.3f}%)"
+        )
+print("Reproduction status:", result["reproduction_status"])
+print("Saved comparison:", output_path)
+PY
+
 echo "Direct Stage1 -> ProductIntegral reproduction complete"
 echo "Stage 1 best:         $STAGE1_BEST"
 echo "ProductIntegral best: $PRODUCT_BEST"
-echo "Final posterior:      $FINAL_ROOT/reference_direct_lift_metrics.json"
+echo "Final posterior:      $DIRECT_METRICS"
+echo "Best comparison:      $COMPARISON_JSON"
