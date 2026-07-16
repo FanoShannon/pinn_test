@@ -58,3 +58,32 @@ Final fixed-case lift metrics:
 The default disables periodic FDM comparisons to save time. This does not alter
 training because those comparisons were posterior-only. Set
 `FDM_COMPARE_EVERY=250` only when intermediate posterior figures are desired.
+
+## Direct Stage 1 to ProductIntegral
+
+After the three-stage reference run has produced its Dynamic Stage 1
+checkpoint, reproduce the original direct chain without retraining Stage 1:
+
+```bash
+!K_CAT=1.0 GAMMA=10.0 \
+FDM_PKL=/content/gdrive/MyDrive/FDM_kg_v42/kg_k1_g10_v42_thin_layer_catalytic_v42.pkl \
+bash ./run_colab_reference_direct_from_stage1.sh
+```
+
+The direct run reads:
+
+```text
+/content/gdrive/MyDrive/pinn_v96_reference/reference_k1.0_gamma10.0/clean_two_stage/stage1_dynamic_fixed/checkpoints/pinn_thin_layer_catalytic_v9_6_multiscale_green_grid_dynamic_stage1_best.pth
+```
+
+and writes a separate final checkpoint:
+
+```text
+/content/gdrive/MyDrive/pinn_v96_reference_direct/reference_k1.0_gamma10.0/productintegral_300_from_stage1/checkpoints/pinn_thin_layer_catalytic_v9_6_multiscale_film_tracegreen_productintegral_best.pth
+```
+
+The final inventory-lift metrics are:
+
+```text
+/content/gdrive/MyDrive/pinn_v96_reference_direct/reference_k1.0_gamma10.0/final_productintegral_lift/reference_direct_lift_metrics.json
+```

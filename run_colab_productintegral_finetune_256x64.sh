@@ -23,6 +23,8 @@ BASE_TRAIN_POINTS="${BASE_TRAIN_POINTS:-8000}"
 MAX_TRAIN_POINTS="${MAX_TRAIN_POINTS:-9000}"
 FDM_COMPARE_EVERY="${FDM_COMPARE_EVERY:-50}"
 COMPARE_BATCH_SIZE="${COMPARE_BATCH_SIZE:-4096}"
+SAVE_EVERY="${SAVE_EVERY:-50}"
+EARLY_STOP_CHECK_EVERY="${EARLY_STOP_CHECK_EVERY:-50}"
 
 ARCH="multiscale_film_tracegreen_productintegral"
 CHECKPOINT_DIR="$RUN_ROOT/checkpoints"
@@ -113,11 +115,13 @@ TRAIN_CMD=(
     --thin-interface-weight 300.0
     --ext-interface-weight 200.0
     --bounds-weight 30.0
-    --save-every 50
+    --clean-residual-initial-scale 0.0
+    --clean-residual-decay-epochs 0
+    --save-every "$SAVE_EVERY"
     --progress-every 25
     --empty-cache-every 100
     --abort-on-nan
-    --early-stop-check-every 50
+    --early-stop-check-every "$EARLY_STOP_CHECK_EVERY"
     --early-stop-patience-checks 4
     --early-stop-min-epochs 100
     --early-stop-min-relative-improvement 0.005
