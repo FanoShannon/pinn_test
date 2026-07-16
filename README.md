@@ -73,29 +73,27 @@ $$
 D_A=D_B=D_C=D_D=1.
 $$
 
-下降扫描段 \(0\le t\le T_{\mathrm{sim}}/2\) 的电位为
-
-$$
-\theta(t)
-=\theta_i
--2(\theta_i-\theta_v)\frac{t}{T_{\mathrm{sim}}}.
-$$
-
-回扫段 \(T_{\mathrm{sim}}/2<t\le T_{\mathrm{sim}}\) 的电位为
+在 $0\le t\le T_{\mathrm{sim}}$ 上，完整三角波电位可写成一个统一公式：
 
 $$
 \theta(t)
 =\theta_v
 +2(\theta_i-\theta_v)
-\frac{t-T_{\mathrm{sim}}/2}{T_{\mathrm{sim}}}.
+\left|
+\frac{t}{T_{\mathrm{sim}}}-\frac12
+\right|.
 $$
+
+它在 $t=0$ 时从 $\theta_i$ 出发，在 $t=T_{\mathrm{sim}}/2$ 时到达
+$\theta_v$，随后在 $t=T_{\mathrm{sim}}$ 时回到 $\theta_i$。前半段斜率为
+$-\sigma$，后半段斜率为 $+\sigma$。
 
 实现位于 `potential_theta()`。网络特征可使用平滑的扫描方向
 `potential_theta_dot_smooth()`，但真实物理电位仍采用上面的分段线性函数。
 
 ## 2. 反应扩散方程
 
-薄层中存在电活性物种 \(A,B\)：
+薄层中存在电活性物种 $A,B$：
 
 $$
 \frac{\partial C_A}{\partial t}
@@ -106,7 +104,7 @@ $$
 \qquad 0<x<\delta.
 $$
 
-外域中存在催化物种 \(C,D\)：
+外域中存在催化物种 $C,D$：
 
 $$
 \frac{\partial C_C}{\partial t}
@@ -125,13 +123,13 @@ C_A+C_B=1,
 C_C+C_D=\gamma.
 $$
 
-因此主线网络只需要独立构造 \(C_B\) 和 \(C_D\)，再使用
+因此主线网络只需要独立构造 $C_B$ 和 $C_D$，再使用
 
 $$
 C_A=1-C_B,\qquad C_C=\gamma-C_D
 $$
 
-精确恢复其余浓度。薄层 PDE loss 仍同时检查 \(A,B\)；TraceGreen 外域只需检查
+精确恢复其余浓度。薄层 PDE loss 仍同时检查 $A,B$；TraceGreen 外域只需检查
 一个独立扩散残差。
 
 初始条件为
@@ -154,20 +152,23 @@ $$
 
 ## 3. 电极 Nernst 边界和 CV 电流
 
-在电极 \(x=0\) 处，Nernst 平衡写成
+在电极 $x=0$ 处，Nernst 平衡写成
 
 $$
 C_A(0,t)=C_B(0,t)e^{\theta(t)}.
 $$
 
-结合 \(C_A+C_B=1\)，得到解析表面状态
+结合 $C_A+C_B=1$，得到解析表面状态
 
 $$
 C_A(0,t)=\frac{e^{\theta}}{1+e^{\theta}}
+=\frac{1}{1+e^{-\theta}}
+=\mathrm{sigmoid}(\theta),
 $$
 
 $$
 C_B(0,t)=\frac{1}{1+e^{\theta}}
+=\mathrm{sigmoid}(-\theta).
 $$
 
 代码中的 `_surface_state()` 直接使用该解析结果，不让界面网络学习 Nernst
@@ -186,7 +187,7 @@ $$
 
 ## 4. 界面反应和薄膜闭合
 
-在 \(x=\delta\) 处，反应速率为
+在 $x=\delta$ 处，反应速率为
 
 $$
 J(t)=k_{\mathrm{cat}}C_{B,i}(t)C_{C,i}(t).
@@ -206,9 +207,9 @@ $$
 -D_D C_{D,x}-J=0.
 $$
 
-这里下标 \(i\) 表示薄层/外域界面。
+这里下标 $i$ 表示薄层/外域界面。
 
-薄膜准稳态近似假设 \(B\) 在薄层中的反应传质满足
+薄膜准稳态近似假设 $B$ 在薄层中的反应传质满足
 
 $$
 C_{B,i}
@@ -216,7 +217,7 @@ C_{B,i}
 {1+k_{\mathrm{cat}}\delta C_{C,i}/D_B},
 $$
 
-其中 \(C_{B,s}=C_B(0,t)\)。定义局部 Damköhler 数
+其中 $C_{B,s}=C_B(0,t)$。定义局部 Damköhler 数
 
 $$
 Da_i
@@ -242,7 +243,7 @@ $$
 =\frac{1}{1+\exp(-\log Da_i)}
 $$
 
-的 log-domain 形式，避免极小或极大 \(k_{\mathrm{cat}}C_{C,i}\) 下的数值问题。
+的 log-domain 形式，避免极小或极大 $k_{\mathrm{cat}}C_{C,i}$ 下的数值问题。
 
 用于跨参数缩放的特征通量为
 
@@ -252,20 +253,20 @@ J_{\mathrm{ref}}(k,\gamma)
 {1+k\gamma\delta/D_B}.
 $$
 
-它对应 \(C_{B,s}\approx1,C_{C,i}\approx\gamma\) 时的薄膜限制通量。
+它对应 $C_{B,s}\approx1,C_{C,i}\approx\gamma$ 时的薄膜限制通量。
 `characteristic_reaction_flux()`、`flux_residual_scale()` 使用该尺度，使
-不同 \(k,\gamma\) 下的通量残差具有可比数量级。
+不同 $k,\gamma$ 下的通量残差具有可比数量级。
 
 ## 5. Abel 历史和 ProductIntegral
 
-外域 \(D\) 由界面反应通量产生。半无限扩散问题的 Neumann-to-trace Abel
+外域 $D$ 由界面反应通量产生。半无限扩散问题的 Neumann-to-trace Abel
 关系为
 
 $$
 C_{D,i}(t)
 =\frac{1}{\sqrt{\pi D_D}}
 \int_0^t
-\frac{J(\tau)}{\sqrt{t-\tau}}\,d\tau.
+\frac{J(\tau)}{\sqrt{t-\tau}}\mathrm{d}\tau.
 $$
 
 同时
@@ -274,17 +275,17 @@ $$
 C_{C,i}(t)=\gamma-C_{D,i}(t).
 $$
 
-由于 \(J\) 又依赖 \(C_{C,i}\)，这是一个非线性 Volterra 闭合，而不是一个
-可以先算 \(J\) 再独立积分的显式公式。
+由于 $J$ 又依赖 $C_{C,i}$，这是一个非线性 Volterra 闭合，而不是一个
+可以先算 $J$ 再独立积分的显式公式。
 
 ### 5.1 已完成时间单元
 
-时间网格为 \(t_n=n\Delta t\)。在每个已完成单元
-\([t_m,t_{m+1}]\) 上，将 \(J(\tau)\) 线性插值。代码对
+时间网格为 $t_n=n\Delta t$。在每个已完成单元
+$[t_m,t_{m+1}]$ 上，将 $J(\tau)$ 线性插值。代码对
 
 $$
 \int_{t_m}^{t_{m+1}}
-\frac{J(\tau)}{\sqrt{t_n-\tau}}\,d\tau
+\frac{J(\tau)}{\sqrt{t_n-\tau}}\mathrm{d}\tau
 $$
 
 进行解析积分，而不是用普通 midpoint rule。对应实现是
@@ -313,11 +314,11 @@ $$
 \left(\ell_h^{3/2}-\ell_l^{3/2}\right),
 $$
 
-最后整体除以 \(\sqrt{\pi D_D}\)。
+最后整体除以 $\sqrt{\pi D_D}$。
 
-### 5.2 含未知 \(J_n\) 的末单元
+### 5.2 含未知 $J_n$ 的末单元
 
-奇异末单元 \([t_{n-1},t_n]\) 可精确写成
+奇异末单元 $[t_{n-1},t_n]$ 可精确写成
 
 $$
 C_{D,i,n}
@@ -375,7 +376,7 @@ $$
 $$
 d_i(t)
 =\frac{1}{\gamma\sqrt{\pi D_D}}
-\int_0^t\frac{J(\tau)}{\sqrt{t-\tau}}\,d\tau.
+\int_0^t\frac{J(\tau)}{\sqrt{t-\tau}}\mathrm{d}\tau.
 $$
 
 末单元闭合变成
@@ -395,11 +396,11 @@ C_{D,i}=\gamma d_i,
 C_{C,i}=\gamma(1-d_i).
 $$
 
-这样避免大 \(\gamma\) 时直接计算 \(\gamma-C_D\) 的尺度损失，也让 Newton
-状态始终处于理论区间 \(0\le d_i\le1\)。
+这样避免大 $\gamma$ 时直接计算 $\gamma-C_D$ 的尺度损失，也让 Newton
+状态始终处于理论区间 $0\le d_i\le1$。
 
 `InterfaceStateNet_v9_6_FilmTraceProductIntegral` 实现固定参数闭合；
-`InterfaceStateNet_v9_6_FilmTraceKGParam` 实现联合 \(k,\gamma\) 闭合。
+`InterfaceStateNet_v9_6_FilmTraceKGParam` 实现联合 $k,\gamma$ 闭合。
 
 ## 6. TraceGreen 外域传播
 
@@ -409,7 +410,7 @@ $$
 y=x-\delta\ge0.
 $$
 
-已知 Dirichlet 边界历史 \(C_{D,i}(t)\) 后，半无限热方程解可以写成
+已知 Dirichlet 边界历史 $C_{D,i}(t)$ 后，半无限热方程解可以写成
 
 $$
 C_D^{G}(y,t)
@@ -419,10 +420,10 @@ C_D^{G}(y,t)
 \exp\left[
 -\frac{y^2}{4D_D(t-\tau)}
 \right]
-C_{D,i}(\tau)\,d\tau.
+C_{D,i}(\tau)\mathrm{d}\tau.
 $$
 
-普通均匀时间积分在 \(y\to0^+\) 时容易漏掉集中在 \(\tau\to t\) 的核质量，
+普通均匀时间积分在 $y\to0^+$ 时容易漏掉集中在 $\tau\to t$ 的核质量，
 从而造成界面浓度跳变。代码使用变量
 
 $$
@@ -440,7 +441,7 @@ $$
 {4D_D[\mathrm{erfc}^{-1}(u)]^2},
 $$
 
-并在 \(u\) 上积分，使
+并在 $u$ 上积分，使
 
 $$
 \lim_{y\to0^+}C_D^{G}(y,t)=C_{D,i}(t)
@@ -515,7 +516,7 @@ h_{01}=-2s^3+3s^2,
 h_{11}=s^3-s^2.
 $$
 
-薄层 \(B\) 的物理基础场为
+薄层 $B$ 的物理基础场为
 
 $$
 C_B^{H}(x,t)
@@ -537,8 +538,8 @@ $$
 C_B
 =C_B^H
 +g_t(t)\left[
-\alpha\,s(1-s)^2\tanh r_1(t,x)
-+\beta\,s^2(1-s)^2\tanh r_0(t,x)
+\alpha s(1-s)^2\tanh r_1(t,x)
++\beta s^2(1-s)^2\tanh r_0(t,x)
 \right],
 $$
 
@@ -548,9 +549,9 @@ $$
 g_t(t)=1-\exp[-t/(0.05T_{\mathrm{sim}})].
 $$
 
-两个 bubble 在 \(s=0,1\) 都为零，所以不会破坏解析端点浓度。
-\(s^2(1-s)^2\) 也不改变端点斜率；
-\(s(1-s)^2=h_{10}\) 只修正电极端斜率，因此可直接解释为 CV 电流修正。
+两个 bubble 在 $s=0,1$ 都为零，所以不会破坏解析端点浓度。
+$s^2(1-s)^2$ 也不改变端点斜率；
+$s(1-s)^2=h_{10}$ 只修正电极端斜率，因此可直接解释为 CV 电流修正。
 
 网络 `MultiscaleResidualHead` 使用 Fourier features、残差 MLP 和小幅初始化。
 它学习的是薄层内部扩散形状与电极斜率剩余量，而不是学习：
@@ -565,10 +566,10 @@ $$
 
 ## 8. 薄层库存守恒和 posterior inventory lift
 
-定义薄层 \(B\) 库存
+定义薄层 $B$ 库存
 
 $$
-M_B(t)=\int_0^\delta C_B(x,t)\,dx.
+M_B(t)=\int_0^\delta C_B(x,t)\mathrm{d}x.
 $$
 
 由薄层扩散方程和界面反应可得代码使用的电流恒等式
@@ -603,13 +604,13 @@ $$
 
 - 两端浓度不变；
 - 右端界面斜率不变；
-- 左端电极斜率增加 \(a(t)\)；
-- \(C_A+C_B=1\) 精确保持。
+- 左端电极斜率增加 $a(t)$；
+- $C_A+C_B=1$ 精确保持。
 
 由于
 
 $$
-\int_0^1 h_{10}(s)\,ds=\frac1{12},
+\int_0^1 h_{10}(s)\mathrm{d}s=\frac1{12},
 $$
 
 库存修正为
@@ -677,16 +678,16 @@ r(t,x;k,\gamma)
 \Delta r(t,x,\eta_k,\eta_\gamma).
 $$
 
-因此当 \(k=1\) 或 \(\gamma=10\) 时，联合交互修正严格消失。adapter 最后一层
+因此当 $k=1$ 或 $\gamma=10$ 时，联合交互修正严格消失。adapter 最后一层
 零初始化；固定 ProductIntegral checkpoint warm-start 到 KG 架构后，
 zero-shot 模式没有 optimizer step，所以 adapter 在整个参数域仍输出零。
 
 当前已验证的 zero-training 泛化主要来自：
 
-1. 运行时重新计算 \(Da_i\) 和薄膜反应；
-2. 对每个 \((k,\gamma)\) 重新求解归一化 ProductIntegral 历史；
+1. 运行时重新计算 $Da_i$ 和薄膜反应；
+2. 对每个 $(k,\gamma)$ 重新求解归一化 ProductIntegral 历史；
 3. 对每个参数对重新执行 TraceGreen 外域传播；
-4. 对每个参数对重新计算 \(J_{\mathrm{ref}}\) 和 inventory lift；
+4. 对每个参数对重新计算 $J_{\mathrm{ref}}$ 和 inventory lift；
 5. 固定网络只提供参考薄层剩余场。
 
 参数不是新的物理坐标，因此 PDE loss 不对下面两个参数方向求导：
@@ -697,7 +698,7 @@ $$
 \frac{\partial C}{\partial\gamma}.
 $$
 
-每个 ProductIntegral batch 必须共享同一个 \((k,\gamma)\)，因为同一条因果
+每个 ProductIntegral batch 必须共享同一个 $(k,\gamma)$，因为同一条因果
 历史不能混合不同物理参数。切换参数时，ProductIntegral、TraceGreen 和
 inventory-lift cache 会全部清除；cache key 也包含当前参数对。
 
@@ -727,8 +728,8 @@ s_J(k,\gamma)
 {J_{\mathrm{ref}}(k,\gamma)}.
 $$
 
-这样参考点 \((k,\gamma)=(1,10)\) 的 loss 权重严格保持原值，同时避免低
-\(\gamma\) 或低 \(k\) 案例在绝对量级上被训练/验证指标忽略。
+这样参考点 $(k,\gamma)=(1,10)$ 的 loss 权重严格保持原值，同时避免低
+$\gamma$ 或低 $k$ 案例在绝对量级上被训练/验证指标忽略。
 
 posterior 指标同样报告
 
@@ -757,27 +758,27 @@ $$
 
 $$
 \mathcal L_{\mathrm{PDE,thin}}
-=\|C_{A,t}-D_AC_{A,xx}\|_2^2
-+\|C_{B,t}-D_BC_{B,xx}\|_2^2.
+=\lVert C_{A,t}-D_AC_{A,xx}\rVert_2^2
++\lVert C_{B,t}-D_BC_{B,xx}\rVert_2^2.
 $$
 
 外域一般形式为
 
 $$
 \mathcal L_{\mathrm{PDE,ext}}
-=\left\|
+=\left\lVert
 s_C(\gamma)
 (C_{C,t}-D_CC_{C,xx})
-\right\|_2^2.
+\right\rVert_2^2.
 $$
 
 对于当前纯 TraceGreen 主线，解析 Green lift 被视为已满足热方程的结构项，
-autograd PDE residual 只作用于 \(R_{\mathrm{smooth}}\)。direct runner 中
-\(R_{\mathrm{smooth}}=0\)，因此不会对奇异 Green 核错误地计算普通点值 PDE
+autograd PDE residual 只作用于 $R_{\mathrm{smooth}}$。direct runner 中
+$R_{\mathrm{smooth}}=0$，因此不会对奇异 Green 核错误地计算普通点值 PDE
 残差。
 
-TraceGreen 的外域界面通量由解析边界势承担。因为普通 autograd 在 \(y=0\)
-无法捕捉 \(\tau\to t\) 的奇异核质量，主线不再用点值导数强迫外域界面通量，
+TraceGreen 的外域界面通量由解析边界势承担。因为普通 autograd 在 $y=0$
+无法捕捉 $\tau\to t$ 的奇异核质量，主线不再用点值导数强迫外域界面通量，
 而是检查
 
 $$
@@ -817,30 +818,30 @@ Stage 1 checkpoint warm-start 到
 
 | 数学/物理部分 | 核心公式 | 代码模块 |
 |---|---|---|
-| 参数与无量纲尺度 | \(T_{\rm sim},\delta,L_{\rm ext},J_{\rm ref}\) | `configure_physical_parameters()`, `characteristic_reaction_flux()` |
-| 三角波电位 | \(\theta(t)\) | `potential_theta()`, `potential_theta_dot_smooth()` |
-| 坐标归一化 | \(t,x\mapsto[-1,1]\) | `normalize_time()`, `normalize_thin_x()`, `normalize_ext_x()` |
-| Nernst 表面状态 | \(C_A=\sigma(\theta),C_B=\sigma(-\theta)\) | `InterfaceStateNet_v9_6_FilmAbel._surface_state()` |
-| 薄膜闭合 | \(C_{B,i}=C_{B,s}/(1+Da_i)\) | `_film_reaction()` |
-| Damköhler/log-domain transfer | \(Da/(1+Da)=\sigma(\log Da)\) | `InterfaceStateNet_v9_6_FilmTraceKParam._film_transfer_fraction()` |
-| Abel 历史 | \(C_{D,i}=(\pi D_D)^{-1/2}\int J/\sqrt{t-\tau}\) | `InterfaceStateNet_v9_6_FilmTraceProductIntegral` |
+| 参数与无量纲尺度 | $T_{\mathrm{sim}},\delta,L_{\mathrm{ext}},J_{\mathrm{ref}}$ | `configure_physical_parameters()`, `characteristic_reaction_flux()` |
+| 三角波电位 | $\theta(t)$ | `potential_theta()`, `potential_theta_dot_smooth()` |
+| 坐标归一化 | $t,x\mapsto[-1,1]$ | `normalize_time()`, `normalize_thin_x()`, `normalize_ext_x()` |
+| Nernst 表面状态 | $C_A=\mathrm{sigmoid}(\theta),\quad C_B=\mathrm{sigmoid}(-\theta)$ | `InterfaceStateNet_v9_6_FilmAbel._surface_state()` |
+| 薄膜闭合 | $C_{B,i}=C_{B,s}/(1+Da_i)$ | `_film_reaction()` |
+| Damköhler/log-domain transfer | $Da/(1+Da)=1/[1+\exp(-\log Da)]$ | `InterfaceStateNet_v9_6_FilmTraceKParam._film_transfer_fraction()` |
+| Abel 历史 | $C_{D,i}=(\pi D_D)^{-1/2}\int J/\sqrt{t-\tau}$ | `InterfaceStateNet_v9_6_FilmTraceProductIntegral` |
 | 已完成 PI 单元 | 分段线性通量的解析奇异积分 | `_completed_product_integral()` |
-| 末单元闭合 | \(I_n+a_n(J_{n-1}/3+2J_n/3)\) | `_history_grid()` |
-| Newton projection | \(s\leftarrow s-F/F'\) | `_product_integral_d_j_d_c_d()`, `_history_grid()` |
-| gamma-normalized PI | \(d=C_D/\gamma\) | `InterfaceStateNet_v9_6_FilmTraceGammaParam`, `InterfaceStateNet_v9_6_FilmTraceKGParam` |
+| 末单元闭合 | $I_n+a_n(J_{n-1}/3+2J_n/3)$ | `_history_grid()` |
+| Newton projection | $s\leftarrow s-F/F'$ | `_product_integral_d_j_d_c_d()`, `_history_grid()` |
+| gamma-normalized PI | $d=C_D/\gamma$ | `InterfaceStateNet_v9_6_FilmTraceGammaParam`, `InterfaceStateNet_v9_6_FilmTraceKGParam` |
 | 外域 Dirichlet Green 势 | 热方程 Poisson kernel | `trace_boundary_convolution_fused()` |
-| erfc trace preservation | \(u=\mathrm{erfc}[y/(2\sqrt{D\Delta t})]\) | `ExternalNet_v9_6_MultiscaleGreenGridFilmTrace` |
-| 远场端点修正 | \(C_D^G-h_{01}C_D^G(L)\) | `tracegreen_lift_and_residual()` |
-| 最终纯 TraceGreen | \(R_{\rm smooth}=0\) | `ExternalNet_v9_6_FilmTraceGreenClean` |
-| 薄层 Hermite 场 | \(h_{00},h_{10},h_{01},h_{11}\) | `hermite_cubic_basis()`, `ThinLayerNet_v9_6_MultiscaleHermite` |
+| erfc trace preservation | $u=\mathrm{erfc}[y/(2\sqrt{D\Delta t})]$ | `ExternalNet_v9_6_MultiscaleGreenGridFilmTrace` |
+| 远场端点修正 | $C_D^G-h_{01}C_D^G(L)$ | `tracegreen_lift_and_residual()` |
+| 最终纯 TraceGreen | $R_{\mathrm{smooth}}=0$ | `ExternalNet_v9_6_FilmTraceGreenClean` |
+| 薄层 Hermite 场 | $h_{00},h_{10},h_{01},h_{11}$ | `hermite_cubic_basis()`, `ThinLayerNet_v9_6_MultiscaleHermite` |
 | 薄层神经剩余 | endpoint-preserving bubble correction | `MultiscaleResidualHead`, `_raw_field()` |
-| CV 电流 | \(J_{\rm surf}=-D_AC_{A,x}(0,t)\) | `surface_current_state()`, `thin_current_components()` |
-| 库存恒等式 | \(J_{\rm surf}=-J-dM_B/dt\) | `thin_current_components()` |
-| posterior inventory lift | \((\delta^2/12)\dot a+D_Aa=S\) | `ThinLayerNet_v9_6_InventoryHermiteLift` |
+| CV 电流 | $J_{\mathrm{surf}}=-D_AC_{A,x}(0,t)$ | `surface_current_state()`, `thin_current_components()` |
+| 库存恒等式 | $J_{\mathrm{surf}}=-J-dM_B/dt$ | `thin_current_components()` |
+| posterior inventory lift | $(\delta^2/12)\dot a+D_Aa=S$ | `ThinLayerNet_v9_6_InventoryHermiteLift` |
 | 联合条件输入 | `[t,x,k,gamma]`，每 batch 一个参数对 | `conditioned_model_inputs()`, `activate_kg_from_input()` |
-| 联合零门控 adapter | \(r=r_0+\eta_k\eta_\gamma\Delta r\) | `ThinLayerNet_v9_6_MultiscaleHermiteKGParam` |
+| 联合零门控 adapter | $r=r_0+\eta_k\eta_\gamma\Delta r$ | `ThinLayerNet_v9_6_MultiscaleHermiteKGParam` |
 | 参数缓存隔离 | cache key 包含 `(k,gamma)` | `set_conditions()`, `condition_cache_key()` |
-| 浓度/通量缩放 | \(s_C=10/\gamma,\ s_J=J_{\rm ref}(1,10)/J_{\rm ref}\) | `external_residual_scale()`, `flux_residual_scale()` |
+| 浓度/通量缩放 | $s_C=10/\gamma,\quad s_J=J_{\mathrm{ref}}(1,10)/J_{\mathrm{ref}}$ | `external_residual_scale()`, `flux_residual_scale()` |
 | physics-only validation | 固定 PDE/BC/守恒网格 | `fixed_physics_validation_score()`, `parameterized_physics_validation_score()` |
 | 模型装配 | ProductIntegral/TraceGreen/Hermite/lift 组合 | `create_models_v96()` |
 | posterior FDM comparison | 冻结预测后计算 RMSE/CV | `compare_concentration_fields.py`, `compare_kg_parameter_cases.py` |
