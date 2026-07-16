@@ -584,6 +584,35 @@ def load_checkpoint(model_thin, model_ext, checkpoint, allow_fixed_reference=Fal
     return state.get("epoch", None)
 
 
+def configure_thin_network_scales(
+    model_thin,
+    correction_scale=None,
+    surface_bubble_scale=None,
+):
+    requested = {
+        "correction_scale": correction_scale,
+        "surface_bubble_scale": surface_bubble_scale,
+    }
+    for name, value in requested.items():
+        if value is None:
+            continue
+        if not hasattr(model_thin, name):
+            raise TypeError(
+                f"{type(model_thin).__name__} does not expose posterior {name}"
+            )
+        setattr(model_thin, name, float(value))
+
+    clear_lift = getattr(model_thin, "clear_lift_cache", None)
+    if clear_lift is not None:
+        clear_lift()
+
+    return {
+        name: float(getattr(model_thin, name))
+        for name in requested
+        if hasattr(model_thin, name)
+    }
+
+
 def configure_evaluation_parameters(args, fdm):
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     checkpoint_params = checkpoint.get("parameters", {})
@@ -789,6 +818,11 @@ def compare(args):
         args.checkpoint,
         allow_fixed_reference=getattr(args, "zero_shot_fixed_reference", False),
     )
+    thin_network_scales = configure_thin_network_scales(
+        model_thin,
+        correction_scale=getattr(args, "thin_correction_scale", None),
+        surface_bubble_scale=getattr(args, "thin_surface_bubble_scale", None),
+    )
 
     t_fdm = np.asarray(fdm["t"], dtype=float)
     x_in_fdm = np.asarray(fdm["x_in"], dtype=float)
@@ -861,6 +895,11 @@ def compare(args):
         "C_C_int is evaluated from the FDM concentration field C_C[:,0], "
         "not from the stored C_C_int history array, whose first element is uninitialized."
     )
+    metrics["thin_network_ablation"] = {
+        **thin_network_scales,
+        "posterior_only": True,
+        "checkpoint_unchanged": True,
+    }
     cv_eval = build_cv_eval(
         model_thin,
         fdm,
@@ -944,6 +983,11 @@ def compare(args):
     print(f"Architecture: {args.arch}")
     print(f"Input mode: {args.input_mode}")
     print(f"Parameters: gamma={pinn.gamma}, k_cat_star={pinn.k_cat_star}")
+    print(
+        "Thin network scales: "
+        f"interior={thin_network_scales.get('correction_scale', float('nan')):.6g}, "
+        f"surface={thin_network_scales.get('surface_bubble_scale', float('nan')):.6g}"
+    )
     print(f"Device: {device}")
     print("field,rmse,mae,max_abs,bias,r2,nrmse,fdm_min,fdm_max,pinn_min,pinn_max")
     for name in [
@@ -1146,6 +1190,18 @@ def main():
     parser.add_argument("--green-kernel-points", type=int, default=32)
     parser.add_argument("--lift-time-grid", type=int, default=1024)
     parser.add_argument("--green-detach-history", action="store_true")
+    parser.add_argument(
+        "--thin-correction-scale",
+        type=float,
+        default=None,
+        help="Posterior-only override for the endpoint-preserving interior bubble scale.",
+    )
+    parser.add_argument(
+        "--thin-surface-bubble-scale",
+        type=float,
+        default=None,
+        help="Posterior-only override for the electrode-slope bubble scale.",
+    )
     parser.add_argument("--input-mode", choices=["legacy", "normalized"], default="legacy")
     parser.add_argument("--n-time", type=int, default=160)
     parser.add_argument("--n-x-in", type=int, default=120)
