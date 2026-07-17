@@ -195,4 +195,3 @@ The current repository uses a scalar $J_n$ and a bimolecular $R$. Other local
 rate laws can reuse the transport operators; multiple reactions lead to a
 small vector closure. New geometries or migration physics require new transport
 operators and are not covered by the current implementation.
-

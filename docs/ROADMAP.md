@@ -89,4 +89,3 @@ A suitable working title is:
 
 > Differentiable Causal Operators for Grid-Free Simulation and Inversion of
 > Multiscale Voltammetry
-

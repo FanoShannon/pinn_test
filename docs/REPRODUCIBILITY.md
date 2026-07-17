@@ -126,7 +126,6 @@ MODE=all \
 OUTPUT_DIR=/content/gdrive/MyDrive/pi_dtn_soe_mainline \
 bash /content/pi_dtn_soe/run_colab_mainline.sh
 ```
-
 Available modes are `forward`, `posterior`, `inverse`, `identifiability`,
 `benchmark`, `multiscan-design`, `multiscan-inverse`, `multiscan`, `all`, and
 `full`.
@@ -142,4 +141,3 @@ FDM_PKL=/content/gdrive/MyDrive/FDM_kg_v42/kg_k1_g10_v42_thin_layer_catalytic_v4
 OUTPUT_DIR=/content/gdrive/MyDrive/pi_dtn_soe_mainline \
 bash /content/pi_dtn_soe/run_colab_mainline.sh
 ```
-

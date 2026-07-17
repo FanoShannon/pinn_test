@@ -73,4 +73,3 @@ def validate_positive_parameters(**parameters):
         value = float(value)
         if not np.isfinite(value) or value <= 0.0:
             raise ValueError(f"{name} must be finite and positive, got {value}")
-

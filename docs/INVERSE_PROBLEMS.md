@@ -148,4 +148,3 @@ sensitivity-qualified region. Every reported joint inverse should include:
 - target/inverse resolution mismatch;
 - noise and discretization audits;
 - a regime-aware fallback when the Jacobian is nearly rank deficient.
-

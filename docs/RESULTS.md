@@ -137,4 +137,3 @@ the independent external inventory/history effect of $\gamma$.
 
 These failures are part of the result: forward parameter generality does not
 imply global inverse identifiability.
-
