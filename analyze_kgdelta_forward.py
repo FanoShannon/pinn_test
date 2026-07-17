@@ -35,6 +35,14 @@ def parse_args():
     parser.add_argument("--time-grid", type=int, default=513)
     parser.add_argument("--modes", type=int, default=128)
     parser.add_argument("--newton-iterations", type=int, default=20)
+    parser.add_argument(
+        "--history-backend",
+        choices=("direct", "soe"),
+        default="soe",
+    )
+    parser.add_argument("--history-near-cells", type=int, default=16)
+    parser.add_argument("--history-soe-terms", type=int, default=128)
+    parser.add_argument("--history-soe-tolerance", type=float, default=1e-10)
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
 
@@ -65,6 +73,10 @@ def main():
                         n_modes=args.modes,
                         newton_iterations=args.newton_iterations,
                         delta=delta,
+                        history_backend=args.history_backend,
+                        history_near_cells=args.history_near_cells,
+                        history_soe_terms=args.history_soe_terms,
+                        history_soe_tolerance=args.history_soe_tolerance,
                     )
                     state = coupled.reconstruct_state(
                         history,
@@ -163,6 +175,10 @@ def main():
         "resolution": {
             "n_time": int(args.time_grid),
             "n_modes": int(args.modes),
+            "history_backend": args.history_backend,
+            "history_near_cells": args.history_near_cells,
+            "history_soe_terms": args.history_soe_terms,
+            "history_soe_tolerance": args.history_soe_tolerance,
         },
         "case_count": len(rows) + len([
             failure for failure in failures if "exception" in failure

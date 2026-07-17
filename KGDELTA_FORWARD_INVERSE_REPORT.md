@@ -71,6 +71,49 @@ differentiation is applied to the complete discrete solution map.
    ProductIntegral-DtN recurrence and the unrolled nonlinear closure.
 5. The triangular scan period is a runtime quantity, enabling multi-scan
    sensitivity studies.
+6. The completed Abel history has two interchangeable backends:
+   `direct` retains the exact `O(N_t^2)` ProductIntegral reference, while
+   `soe` keeps the most recent 16 cells exact and recursively propagates a
+   positive 128-term sum-of-exponentials tail.
+
+## Fast differentiable Abel history
+
+On a uniform time grid, the interface history is split as
+
+```text
+C_D,int[n] = H_completed[n]
+             + 2 sqrt(dt / (pi D_D)) (J[n-1] / 3 + 2 J[n] / 3).
+```
+
+The singular current cell and its `1/3, 2/3` ProductIntegral weights remain
+exact. Only the completed far history is accelerated using
+
+```text
+u^(-1/2) ~= sum_q w_q exp(-lambda_q u).
+```
+
+Each exponential has one causal memory state. The far-history complexity is
+therefore reduced from `O(N_t^2)` to `O(P N_t)`, where `P=128` by default.
+The SOE nodes and positive weights depend only on the uniform time grid and
+`D_D`; they are cached and reused during parameter optimization. The local
+nonlinear ProductIntegral closure and all derivatives with respect to
+`k_cat`, `gamma`, and `delta` are unchanged.
+
+Local CPU benchmark results, including the complete coupled solve, are:
+
+| Time points | NumPy speedup | Torch forward/backward speedup | Max absolute J difference |
+|---:|---:|---:|---:|
+| 257 | 1.53x | 1.19x | 2.93e-11 |
+| 1025 | 2.46x | 1.72x | 3.21e-11 |
+| 4097 | 3.85x | - | 3.64e-11 |
+| 8193 | 5.87x | - | 4.33e-11 |
+
+At 1025 points, the relative difference in the automatic derivative with
+respect to `log(delta)` is `1.50e-11`. All 100 joint parameter stress cases
+remain finite and closed. A direct-versus-SOE inversion of `delta=0.07`
+changed the estimate by only `5.1e-13`. In the independent `delta=0.14` FDM
+posterior, the overall dimensionless RMSE changed by `1.9e-13` and the
+surface-current `CV/J_ref` RMSE by `1.6e-13`.
 
 ## Forward convergence without FDM
 
@@ -219,6 +262,7 @@ FDM-free delta inversion:
 
 ```bash
 python invert_delta_from_cv.py \
+  --history-backend soe \
   --output-dir delta_inversion
 ```
 
@@ -231,12 +275,22 @@ python analyze_inverse_identifiability.py \
 
 python analyze_inverse_identifiability.py \
   --sigmas 5,40,320 \
+  --history-backend soe \
   --output wide_multi_scan.json
+```
+
+Direct-versus-SOE output, gradient, and timing benchmark:
+
+```bash
+python benchmark_fast_abel_history.py \
+  --output fast_history_benchmark.json
 ```
 
 ## Current limitations
 
-- The Abel completed-history evaluation is still `O(N_t^2)`.
+- The exact `direct` history backend remains `O(N_t^2)`. The `soe` backend
+  requires a uniform time grid and is a controlled approximation, so direct
+  remains the numerical reference for convergence studies.
 - The differentiable nonlinear solve uses a fixed unrolled Newton iteration.
 - The verified forward thickness interval is `0.01 <= delta <= 0.14`; the API
   accepts any positive value, but accuracy outside this range is not claimed.

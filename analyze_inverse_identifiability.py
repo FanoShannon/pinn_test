@@ -21,7 +21,17 @@ def parse_values(text):
     return values
 
 
-def sensitivity_matrix(time, k_cat, gamma, delta, n_modes):
+def sensitivity_matrix(
+    time,
+    k_cat,
+    gamma,
+    delta,
+    n_modes,
+    history_backend,
+    history_near_cells,
+    history_soe_terms,
+    history_soe_tolerance,
+):
     parameters = torch.tensor(
         [np.log(k_cat), np.log(gamma), np.log(delta)],
         dtype=torch.float64,
@@ -36,6 +46,10 @@ def sensitivity_matrix(time, k_cat, gamma, delta, n_modes):
             delta=torch.exp(values[2]),
             n_modes=n_modes,
             newton_iterations=10,
+            history_backend=history_backend,
+            history_near_cells=history_near_cells,
+            history_soe_terms=history_soe_terms,
+            history_soe_tolerance=history_soe_tolerance,
         )
         return state["J_surface"][1:]
 
@@ -106,6 +120,14 @@ def parse_args():
     )
     parser.add_argument("--time-grid", type=int, default=257)
     parser.add_argument("--modes", type=int, default=96)
+    parser.add_argument(
+        "--history-backend",
+        choices=("direct", "soe"),
+        default="soe",
+    )
+    parser.add_argument("--history-near-cells", type=int, default=16)
+    parser.add_argument("--history-soe-terms", type=int, default=128)
+    parser.add_argument("--history-soe-tolerance", type=float, default=1e-10)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 
@@ -136,6 +158,10 @@ def main():
                 args.gamma,
                 delta,
                 args.modes,
+                args.history_backend,
+                args.history_near_cells,
+                args.history_soe_terms,
+                args.history_soe_tolerance,
             )
             current_span = max(float(np.ptp(current)), 1e-15)
             spans.append(current_span)
@@ -171,6 +197,10 @@ def main():
         "resolution": {
             "n_time": int(args.time_grid),
             "n_modes": int(args.modes),
+            "history_backend": args.history_backend,
+            "history_near_cells": args.history_near_cells,
+            "history_soe_terms": args.history_soe_terms,
+            "history_soe_tolerance": args.history_soe_tolerance,
         },
         "cases": cases,
     }

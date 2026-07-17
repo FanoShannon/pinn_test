@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 
+import fast_abel_history
 import pinn_thin_layer_v9_6 as pinn
 
 
@@ -79,6 +80,10 @@ def solve_coupled_operator(
     delta,
     n_modes,
     newton_iterations=10,
+    history_backend="direct",
+    history_near_cells=16,
+    history_soe_terms=128,
+    history_soe_tolerance=1e-10,
 ):
     """Differentiable ProductIntegral-DtN recurrence for scalar parameters."""
     if not torch.is_tensor(time):
@@ -112,6 +117,33 @@ def solve_coupled_operator(
 
     diffusion_b = float(pinn.D_rel_B)
     diffusion_d = float(pinn.D_rel_D)
+    if history_backend not in ("direct", "soe"):
+        raise ValueError("history_backend must be 'direct' or 'soe'")
+    soe_plan = None
+    soe_near_weights = None
+    soe_decay = None
+    soe_tail_amplitudes = None
+    soe_tail_state = None
+    if history_backend == "soe":
+        soe_plan = fast_abel_history.build_soe_history_plan(
+            len(time),
+            float(dt.detach().cpu()),
+            diffusion_d,
+            near_cells=history_near_cells,
+            n_terms=history_soe_terms,
+            tolerance=history_soe_tolerance,
+        )
+        tensor_options = {"dtype": time.dtype, "device": time.device}
+        soe_near_weights = torch.tensor(
+            soe_plan.near_weights,
+            **tensor_options,
+        )
+        soe_decay = torch.tensor(soe_plan.decay, **tensor_options)
+        soe_tail_amplitudes = torch.tensor(
+            soe_plan.tail_amplitudes,
+            **tensor_options,
+        )
+        soe_tail_state = torch.zeros(soe_plan.n_terms, **tensor_options)
     theta, surface = triangular_protocol(time)
     mode_index = torch.arange(
         n_modes,
@@ -145,12 +177,28 @@ def solve_coupled_operator(
     c_d_int = [torch.zeros((), dtype=time.dtype, device=time.device)]
 
     for step in range(1, len(time)):
-        completed = completed_product_integral(
-            current,
-            step,
-            dt,
-            diffusion_d,
-        )
+        if soe_plan is None:
+            completed = completed_product_integral(
+                current,
+                step,
+                dt,
+                diffusion_d,
+            )
+        else:
+            count = min(soe_plan.near_cells, step - 1)
+            if count:
+                near_values = torch.stack([
+                    current[step - lag]
+                    for lag in range(1, count + 1)
+                ])
+                completed = torch.sum(
+                    soe_near_weights[:count] * near_values
+                )
+            else:
+                completed = current[0] * 0.0
+            completed = completed + torch.sum(
+                soe_tail_amplitudes * soe_tail_state
+            )
         previous_current = current[-1]
         surface_slope = (surface[step] - surface[step - 1]) / dt
         amplitude_intercept = (
@@ -186,6 +234,9 @@ def solve_coupled_operator(
         c_c_value = c_intercept + current_c_slope * value
         c_c_int.append(c_c_value)
         c_d_int.append(gamma - c_c_value)
+        if soe_plan is not None and step >= soe_plan.near_cells:
+            entering = current[step - soe_plan.near_cells]
+            soe_tail_state = soe_decay * soe_tail_state + entering
 
     amplitudes = torch.stack(amplitudes)
     current = torch.stack(current)
@@ -225,4 +276,14 @@ def solve_coupled_operator(
         "M_B": inventory,
         "amplitudes": amplitudes,
         "mu": mu,
+        "history_backend": history_backend,
+        "history_near_cells": (
+            None if soe_plan is None else soe_plan.near_cells
+        ),
+        "history_soe_terms": (
+            None if soe_plan is None else soe_plan.n_terms
+        ),
+        "history_soe_tolerance": (
+            None if soe_plan is None else soe_plan.tolerance
+        ),
     }

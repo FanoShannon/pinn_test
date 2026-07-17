@@ -278,6 +278,42 @@ class CoupledThinDtnOperatorTests(unittest.TestCase):
         midpoint_error = float(np.sqrt(np.mean((midpoint - reference) ** 2)))
         self.assertLess(gauss_error, 0.2 * midpoint_error)
 
+    def test_soe_operator_matches_direct_history_across_parameters(self):
+        time = np.linspace(0.0, float(pinn.T_sim), 257)
+        for k_cat, gamma, delta in (
+            (0.1, 0.1, 0.14),
+            (1.0, 10.0, 0.035),
+            (100.0, 1.0, 0.01),
+        ):
+            direct = coupled.solve_coupled_operator(
+                time,
+                gamma=gamma,
+                k_cat=k_cat,
+                n_modes=48,
+                newton_iterations=16,
+                delta=delta,
+                history_backend="direct",
+            )
+            fast = coupled.solve_coupled_operator(
+                time,
+                gamma=gamma,
+                k_cat=k_cat,
+                n_modes=48,
+                newton_iterations=16,
+                delta=delta,
+                history_backend="soe",
+            )
+            for name in ("C_B_int", "C_C_int", "C_D_int", "J_rxn"):
+                np.testing.assert_allclose(
+                    fast[name],
+                    direct[name],
+                    rtol=2e-9,
+                    atol=2e-10,
+                    err_msg=f"{name}, k={k_cat}, gamma={gamma}, delta={delta}",
+                )
+            self.assertEqual(fast["history_backend"], "soe")
+            self.assertEqual(fast["history_near_cells"], 16)
+
 
 if __name__ == "__main__":
     unittest.main()

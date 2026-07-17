@@ -129,6 +129,92 @@ class DifferentiableCoupledOperatorTests(unittest.TestCase):
                 atol=2e-12,
             )
 
+    def test_differentiable_soe_matches_direct_outputs_and_gradient(self):
+        time = torch.linspace(
+            0.0,
+            float(pinn.T_sim),
+            129,
+            dtype=torch.float64,
+        )
+
+        def objective(log_delta, backend):
+            state = differentiable.solve_coupled_operator(
+                time,
+                gamma=10.0,
+                k_cat=1.0,
+                delta=torch.exp(log_delta),
+                n_modes=48,
+                newton_iterations=10,
+                history_backend=backend,
+            )
+            return torch.mean(state["J_surface"][1:] ** 2), state
+
+        direct_delta = torch.tensor(
+            np.log(0.035),
+            dtype=torch.float64,
+            requires_grad=True,
+        )
+        fast_delta = direct_delta.detach().clone().requires_grad_(True)
+        direct_loss, direct_state = objective(direct_delta, "direct")
+        fast_loss, fast_state = objective(fast_delta, "soe")
+        direct_gradient = torch.autograd.grad(direct_loss, direct_delta)[0]
+        fast_gradient = torch.autograd.grad(fast_loss, fast_delta)[0]
+        np.testing.assert_allclose(
+            fast_state["J_rxn"].detach().numpy(),
+            direct_state["J_rxn"].detach().numpy(),
+            rtol=2e-9,
+            atol=2e-10,
+        )
+        self.assertLess(
+            abs(float(fast_gradient - direct_gradient))
+            /max(abs(float(direct_gradient)), 1e-15),
+            2e-8,
+        )
+
+    def test_soe_preserves_joint_parameter_gradient(self):
+        time = torch.linspace(
+            0.0,
+            float(pinn.T_sim),
+            65,
+            dtype=torch.float64,
+        )
+
+        def objective(values, backend):
+            state = differentiable.solve_coupled_operator(
+                time,
+                gamma=torch.exp(values[1]),
+                k_cat=torch.exp(values[0]),
+                delta=torch.exp(values[2]),
+                n_modes=24,
+                newton_iterations=10,
+                history_backend=backend,
+            )
+            return (
+                torch.mean(state["J_surface"][1:] ** 2)
+                +torch.mean(state["C_D_int"][1:] ** 2)
+            )
+
+        reference_values = torch.tensor(
+            [np.log(1.0), np.log(10.0), np.log(0.035)],
+            dtype=torch.float64,
+        )
+        direct_values = reference_values.clone().requires_grad_(True)
+        fast_values = reference_values.clone().requires_grad_(True)
+        direct_gradient = torch.autograd.grad(
+            objective(direct_values, "direct"),
+            direct_values,
+        )[0]
+        fast_gradient = torch.autograd.grad(
+            objective(fast_values, "soe"),
+            fast_values,
+        )[0]
+        np.testing.assert_allclose(
+            fast_gradient.detach().numpy(),
+            direct_gradient.detach().numpy(),
+            rtol=2e-8,
+            atol=2e-9,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

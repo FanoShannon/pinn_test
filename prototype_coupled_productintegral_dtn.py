@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 import compare_concentration_fields as compare_fields
+import fast_abel_history
 import pinn_thin_layer_v9_6 as pinn
 
 
@@ -188,6 +189,10 @@ def solve_coupled_operator(
     n_modes,
     newton_iterations,
     delta=None,
+    history_backend="direct",
+    history_near_cells=16,
+    history_soe_terms=128,
+    history_soe_tolerance=1e-10,
 ):
     """Couple finite-slab DtN and external Abel ProductIntegral cell by cell."""
     delta = float(pinn.delta if delta is None else delta)
@@ -210,6 +215,19 @@ def solve_coupled_operator(
 
     diffusion_b = float(pinn.D_rel_B)
     diffusion_d = float(pinn.D_rel_D)
+    if history_backend not in ("direct", "soe"):
+        raise ValueError("history_backend must be 'direct' or 'soe'")
+    soe_history = None
+    if history_backend == "soe":
+        soe_plan = fast_abel_history.build_soe_history_plan(
+            len(time),
+            dt,
+            diffusion_d,
+            near_cells=history_near_cells,
+            n_terms=history_soe_terms,
+            tolerance=history_soe_tolerance,
+        )
+        soe_history = fast_abel_history.NumpySoeHistory(soe_plan)
     thickness = delta
     theta, surface = triangular_protocol(time)
 
@@ -241,12 +259,15 @@ def solve_coupled_operator(
     current_c_slope = -(2.0 / 3.0) * current_cell_factor
 
     for step in range(1, len(time)):
-        completed = completed_product_integral(
-            current,
-            step,
-            dt,
-            diffusion_d,
-        )
+        if soe_history is None:
+            completed = completed_product_integral(
+                current,
+                step,
+                dt,
+                diffusion_d,
+            )
+        else:
+            completed = soe_history.completed(current, step)
         previous_current = current[step - 1]
         surface_slope = (surface[step] - surface[step - 1]) / dt
         amplitude_intercept = (
@@ -281,6 +302,8 @@ def solve_coupled_operator(
         c_b_int[step] = b_intercept + b_slope * value
         c_c_int[step] = c_intercept + current_c_slope * value
         c_d_int[step] = gamma - c_c_int[step]
+        if soe_history is not None:
+            soe_history.advance(current, step)
 
     return {
         "gamma": float(gamma),
@@ -288,6 +311,16 @@ def solve_coupled_operator(
         "delta": thickness,
         "D_B": diffusion_b,
         "D_D": diffusion_d,
+        "history_backend": history_backend,
+        "history_near_cells": (
+            None if soe_history is None else soe_history.plan.near_cells
+        ),
+        "history_soe_terms": (
+            None if soe_history is None else soe_history.plan.n_terms
+        ),
+        "history_soe_tolerance": (
+            None if soe_history is None else soe_history.plan.tolerance
+        ),
         "external_length": float(
             pinn.X_ext_factor * np.sqrt(float(time[-1]))
         ),
@@ -862,6 +895,14 @@ def parse_args():
     parser.add_argument("--operator-time-grid", type=int, default=256)
     parser.add_argument("--mode-counts", default="32,64,128,256")
     parser.add_argument("--newton-iterations", type=int, default=12)
+    parser.add_argument(
+        "--history-backend",
+        choices=("direct", "soe"),
+        default="direct",
+    )
+    parser.add_argument("--history-near-cells", type=int, default=16)
+    parser.add_argument("--history-soe-terms", type=int, default=128)
+    parser.add_argument("--history-soe-tolerance", type=float, default=1e-10)
     parser.add_argument("--n-time", type=int, default=160)
     parser.add_argument("--n-x", type=int, default=120)
     parser.add_argument("--n-x-out", type=int, default=120)
@@ -909,6 +950,10 @@ def main():
             n_modes,
             args.newton_iterations,
             delta=args.delta,
+            history_backend=args.history_backend,
+            history_near_cells=args.history_near_cells,
+            history_soe_terms=args.history_soe_terms,
+            history_soe_tolerance=args.history_soe_tolerance,
         )
         metrics = evaluate(
             fdm,
@@ -943,6 +988,10 @@ def main():
         "fdm_role": "posterior_only",
         "spatial_grid_in_operator": False,
         "operator_time_grid": int(args.operator_time_grid),
+        "history_backend": args.history_backend,
+        "history_near_cells": int(args.history_near_cells),
+        "history_soe_terms": int(args.history_soe_terms),
+        "history_soe_tolerance": float(args.history_soe_tolerance),
         "green_kernel_points": int(args.green_kernel_points),
         "green_quadrature": args.green_quadrature,
         "parameters": {

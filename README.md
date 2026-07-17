@@ -4,7 +4,9 @@
 
 The zero-training finite-slab DtN operator now accepts runtime `k_cat`,
 `gamma`, and `delta`, includes higher-accuracy Gauss-Legendre TraceGreen
-quadrature, and has a differentiable delta-inversion prototype.
+quadrature, and has a differentiable delta-inversion prototype. A fast
+near-exact/SOE Abel-history backend accelerates repeated forward and inverse
+solves without changing the nonlinear ProductIntegral closure.
 
 See [KGDELTA_FORWARD_INVERSE_REPORT.md](KGDELTA_FORWARD_INVERSE_REPORT.md) for
 the equations, FDM-separated validation, error decomposition, inversion
@@ -15,6 +17,16 @@ Colab can run the FDM-free study with:
 ```bash
 OUTPUT_DIR="/content/gdrive/MyDrive/pinn_v96_delta_research" \
 MODE=all \
+bash ./run_colab_delta_forward_inverse.sh
+```
+
+The runner uses `HISTORY_BACKEND=soe` for stress, inversion, and
+identifiability. Set `HISTORY_BACKEND=direct` to reproduce the exact
+quadratic-history reference. Run only the timing and accuracy comparison with:
+
+```bash
+OUTPUT_DIR="/content/gdrive/MyDrive/pinn_v96_delta_research" \
+MODE=benchmark \
 bash ./run_colab_delta_forward_inverse.sh
 ```
 

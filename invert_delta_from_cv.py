@@ -79,6 +79,10 @@ def invert_one_case(
     inverse_modes,
     newton_iterations,
     lbfgs_iterations,
+    history_backend,
+    history_near_cells,
+    history_soe_terms,
+    history_soe_tolerance,
 ):
     time = torch.from_numpy(observation_time)
     target = torch.from_numpy(observed_current)
@@ -111,6 +115,10 @@ def invert_one_case(
             delta=delta,
             n_modes=inverse_modes,
             newton_iterations=newton_iterations,
+            history_backend=history_backend,
+            history_near_cells=history_near_cells,
+            history_soe_terms=history_soe_terms,
+            history_soe_tolerance=history_soe_tolerance,
         )
         residual = (
             state["J_surface"][mask] - target[mask]
@@ -136,6 +144,10 @@ def invert_one_case(
         delta=torch.tensor(estimated_delta, dtype=torch.float64),
         n_modes=inverse_modes,
         newton_iterations=newton_iterations,
+        history_backend=history_backend,
+        history_near_cells=history_near_cells,
+        history_soe_terms=history_soe_terms,
+        history_soe_tolerance=history_soe_tolerance,
     )
     prediction = final_state["J_surface"].detach().numpy()
     residual = prediction[1:] - observed_current[1:]
@@ -186,6 +198,14 @@ def parse_args():
     parser.add_argument("--inverse-modes", type=int, default=96)
     parser.add_argument("--newton-iterations", type=int, default=10)
     parser.add_argument("--lbfgs-iterations", type=int, default=24)
+    parser.add_argument(
+        "--history-backend",
+        choices=("direct", "soe"),
+        default="soe",
+    )
+    parser.add_argument("--history-near-cells", type=int, default=16)
+    parser.add_argument("--history-soe-terms", type=int, default=128)
+    parser.add_argument("--history-soe-tolerance", type=float, default=1e-10)
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
 
@@ -259,6 +279,10 @@ def main():
                     args.inverse_modes,
                     args.newton_iterations,
                     args.lbfgs_iterations,
+                    args.history_backend,
+                    args.history_near_cells,
+                    args.history_soe_terms,
+                    args.history_soe_tolerance,
                 )
                 key = (
                     f"delta={true_delta:.12g},"
@@ -296,10 +320,15 @@ def main():
         "target_resolution": {
             "n_time": args.target_time_grid,
             "n_modes": args.target_modes,
+            "history_backend": "direct",
         },
         "inverse_resolution": {
             "n_time": args.observation_points,
             "n_modes": args.inverse_modes,
+            "history_backend": args.history_backend,
+            "history_near_cells": args.history_near_cells,
+            "history_soe_terms": args.history_soe_terms,
+            "history_soe_tolerance": args.history_soe_tolerance,
         },
         "cases": cases,
     }
