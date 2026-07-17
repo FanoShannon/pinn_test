@@ -12,6 +12,25 @@ See [KGDELTA_FORWARD_INVERSE_REPORT.md](KGDELTA_FORWARD_INVERSE_REPORT.md) for
 the equations, FDM-separated validation, error decomposition, inversion
 results, and identifiability limits.
 
+The new multi-scan inverse study simultaneously estimates `k_cat`, `gamma`,
+and `delta` in sensitivity-qualified regimes, and automatically supports
+two-parameter and one-parameter fallbacks. It uses no FDM data and no neural
+network. See
+[MULTISCAN_PARAMETER_INVERSE_REPORT.md](MULTISCAN_PARAMETER_INVERSE_REPORT.md)
+for the equations, scan-rate design, blind multi-start results, noise
+ablation, and the low-reaction/high-Damkoehler failure boundaries.
+
+Run scan design and multi-scan inversion together with:
+
+```bash
+OUTPUT_DIR="/content/gdrive/MyDrive/pinn_v96_multiscan_inverse" \
+MODE=multiscan \
+TRUE_K=1 TRUE_GAMMA=10 TRUE_DELTA=0.035 \
+SCAN_RATES="5,40,320" \
+INVERSE_MODES="all,fix-gamma" \
+bash ./run_colab_delta_forward_inverse.sh
+```
+
 Colab can run the FDM-free study with:
 
 ```bash

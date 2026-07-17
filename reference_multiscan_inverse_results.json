@@ -1,0 +1,72 @@
+{
+  "study": "fdm_free_multiscan_parameter_inversion_reference",
+  "fdm_used": false,
+  "neural_network_used": false,
+  "target_source": "high_resolution_direct_physical_operator",
+  "inverse_source": "lower_resolution_differentiable_soe_physical_operator",
+  "parameter_order": ["k_cat", "gamma", "delta"],
+  "nominal": {
+    "true_parameters": {
+      "k_cat": 1.0,
+      "gamma": 10.0,
+      "delta": 0.035
+    },
+    "scan_rates": [5.0, 40.0, 320.0],
+    "target_resolution": [1025, 192],
+    "inverse_resolution": [129, 64],
+    "zero_noise": {
+      "estimated_parameters": [0.99776953, 10.00737275, 0.03504503],
+      "max_relative_error": 0.0022305,
+      "objective": 3.7230e-06
+    },
+    "noise_0p1_percent": {
+      "estimated_parameters": [0.99824496, 10.00515745, 0.03504018],
+      "max_relative_error": 0.0017550,
+      "objective": 4.8351e-06
+    },
+    "noise_1_percent": {
+      "estimated_parameters": [1.00253443, 9.98523688, 0.03499628],
+      "max_relative_error": 0.0025344,
+      "objective": 1.0050e-04
+    },
+    "single_scan_noise_1_percent": {
+      "scan_rates": [40.0],
+      "estimated_parameters": [1.02877821, 9.85755804, 0.03615541],
+      "max_relative_error": 0.033012,
+      "objective": 8.6418e-05
+    }
+  },
+  "same_product_cases": [
+    {
+      "true_parameters": [0.3, 30.0, 0.07],
+      "scan_rates": [2.5, 40.0, 640.0],
+      "estimated_parameters": [0.29466738, 30.24243309, 0.06911459],
+      "max_relative_error": 0.017775
+    },
+    {
+      "true_parameters": [3.0, 3.0, 0.07],
+      "scan_rates": [2.5, 40.0, 640.0],
+      "estimated_parameters": [2.98118256, 2.99834874, 0.06921933],
+      "max_relative_error": 0.011152
+    }
+  ],
+  "low_reaction_failure": {
+    "true_parameters": [0.1, 0.1, 0.035],
+    "scan_rates": [2.5, 320.0, 640.0],
+    "three_parameter_stable_branch_max_relative_error": 0.077316,
+    "multistart_k_range": [0.01, 0.105562],
+    "multistart_gamma_range": [0.092267, 0.809228],
+    "fix_gamma_k_delta_max_relative_error": 0.042757
+  },
+  "saturated_failure": {
+    "true_parameters": [10.0, 100.0, 0.14],
+    "scan_rates": [2.5, 320.0, 640.0],
+    "multistart_k_range": [0.084039, 50.099207],
+    "multistart_gamma_range": [245.152435, 551.94335],
+    "delta_only_estimate": 0.14014828,
+    "delta_only_relative_error": 0.0010592,
+    "k_only_relative_error": 0.10909,
+    "gamma_only_relative_error": 0.085967
+  },
+  "interpretation": "Joint recovery is supported only in a local sensitivity-qualified interior regime; asymptotic weak-reaction and high-Damkohler cases require fixed parameters or additional observables."
+}

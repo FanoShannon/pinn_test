@@ -242,6 +242,13 @@ remain strongly correlated. The supported conclusion is therefore:
   informative priors, or independently known `gamma`;
 - a neural network cannot repair structural non-identifiability.
 
+The subsequent explicit multi-start inversion study refines this local
+conclusion: three widely separated scans can recover all three parameters in
+an interior sensitivity-qualified regime, but not in the weak-reaction or
+transport-saturated limits. See
+[`MULTISCAN_PARAMETER_INVERSE_REPORT.md`](MULTISCAN_PARAMETER_INVERSE_REPORT.md)
+for the blind inversion, noise ablation, and regime-dependent fallbacks.
+
 ## Reproducible commands
 
 Forward convergence without FDM:
