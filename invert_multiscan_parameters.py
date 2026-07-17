@@ -7,9 +7,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-import differentiable_coupled_operator as differentiable
-import pinn_thin_layer_v9_6 as pinn
-import prototype_coupled_productintegral_dtn as numpy_operator
+import differentiable_productintegral_dtn as differentiable
+import physical_model as physics
+import productintegral_dtn as numpy_operator
 
 
 PARAMETER_NAMES = ("k_cat", "gamma", "delta")
@@ -53,7 +53,7 @@ def parse_modes(text):
 
 
 def scan_duration(sigma):
-    return 2.0 * abs(float(pinn.theta_i - pinn.theta_switch)) / float(sigma)
+    return physics.protocol_duration(sigma)
 
 
 def parameter_bounds(args):

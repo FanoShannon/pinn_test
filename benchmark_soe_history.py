@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-import differentiable_coupled_operator as differentiable
-import pinn_thin_layer_v9_6 as pinn
-import prototype_coupled_productintegral_dtn as numpy_operator
+import differentiable_productintegral_dtn as differentiable
+import physical_model as physics
+import productintegral_dtn as numpy_operator
 
 
 def parse_int_list(text):
@@ -36,7 +36,7 @@ def timed(callable_, repeats, synchronize=None):
 
 
 def numpy_solve(n_time, backend, args):
-    time_grid = np.linspace(0.0, float(pinn.T_sim), n_time)
+    time_grid = np.linspace(0.0, physics.DEFAULT_SIMULATION_TIME, n_time)
     return numpy_operator.solve_coupled_operator(
         time_grid,
         gamma=args.gamma,
@@ -54,7 +54,7 @@ def numpy_solve(n_time, backend, args):
 def torch_solve(n_time, backend, args, device):
     time_grid = torch.linspace(
         0.0,
-        float(pinn.T_sim),
+        physics.DEFAULT_SIMULATION_TIME,
         n_time,
         dtype=torch.float64,
         device=device,
@@ -115,9 +115,8 @@ def main():
     device = torch.device(args.device)
     synchronize = torch.cuda.synchronize if device.type == "cuda" else None
     report = {
-        "study": "fast_abel_history_benchmark",
+        "study": "soe_abel_history_benchmark",
         "fdm_used": False,
-        "checkpoint_used": False,
         "system": {
             "platform": platform.platform(),
             "python": platform.python_version(),

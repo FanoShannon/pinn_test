@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 from analyze_inverse_identifiability import sensitivity_matrix
-import pinn_thin_layer_v9_6 as pinn
+import physical_model as physics
 
 
 PARAMETER_NAMES = ("k_cat", "gamma", "delta")
@@ -197,7 +197,7 @@ def main():
         for sigma in candidates:
             duration = (
                 2.0
-                *abs(float(pinn.theta_i - pinn.theta_switch))
+                * abs(physics.THETA_INITIAL - physics.THETA_SWITCH)
                 /sigma
             )
             time = torch.linspace(

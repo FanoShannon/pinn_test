@@ -2,17 +2,18 @@
 set -euo pipefail
 
 CODE_DIR="${CODE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-OUTPUT_DIR="${OUTPUT_DIR:-/content/gdrive/MyDrive/pinn_v96_delta_research}"
+OUTPUT_DIR="${OUTPUT_DIR:-/content/gdrive/MyDrive/pi_dtn_soe_mainline}"
 PYTHON="${PYTHON:-python}"
 MODE="${MODE:-all}"
 HISTORY_BACKEND="${HISTORY_BACKEND:-soe}"
 TRUE_K="${TRUE_K:-1}"
 TRUE_GAMMA="${TRUE_GAMMA:-10}"
 TRUE_DELTA="${TRUE_DELTA:-0.035}"
-SCAN_RATES="${SCAN_RATES:-5,40,320}"
+FDM_PKL="${FDM_PKL:-}"
+SCAN_RATES="${SCAN_RATES:-2.5,40,640}"
 INVERSE_MODES="${INVERSE_MODES:-all,fix-gamma}"
-NOISE_LEVELS="${NOISE_LEVELS:-0,0.001}"
-N_STARTS="${N_STARTS:-3}"
+NOISE_LEVELS="${NOISE_LEVELS:-0,0.01}"
+N_STARTS="${N_STARTS:-4}"
 LBFGS_ITERATIONS="${LBFGS_ITERATIONS:-36}"
 TARGET_TIME_GRID="${TARGET_TIME_GRID:-2049}"
 TARGET_MODES="${TARGET_MODES:-256}"
@@ -29,6 +30,22 @@ run_forward() {
     "$PYTHON" analyze_kgdelta_forward.py \
         --history-backend "$HISTORY_BACKEND" \
         --output-dir "${OUTPUT_DIR}/joint_stress"
+}
+
+run_posterior() {
+    [[ -f "$FDM_PKL" ]] || {
+        echo "Set FDM_PKL to one matching posterior-only FDM file." >&2
+        exit 2
+    }
+    "$PYTHON" productintegral_dtn.py \
+        --fdm-pkl "$FDM_PKL" \
+        --output-dir "${OUTPUT_DIR}/fdm_posterior" \
+        --k-cat "$TRUE_K" \
+        --gamma "$TRUE_GAMMA" \
+        --delta "$TRUE_DELTA" \
+        --operator-time-grid 4096 \
+        --mode-counts 256 \
+        --history-backend "$HISTORY_BACKEND"
 }
 
 run_inverse() {
@@ -49,8 +66,8 @@ run_identifiability() {
 }
 
 run_benchmark() {
-    "$PYTHON" benchmark_fast_abel_history.py \
-        --output "${OUTPUT_DIR}/fast_history_benchmark.json"
+    "$PYTHON" benchmark_soe_history.py \
+        --output "${OUTPUT_DIR}/soe_history_benchmark.json"
 }
 
 run_multiscan_design() {
@@ -88,6 +105,9 @@ case "$MODE" in
     forward)
         run_forward
         ;;
+    posterior)
+        run_posterior
+        ;;
     inverse)
         run_inverse
         ;;
@@ -112,9 +132,18 @@ case "$MODE" in
         run_inverse
         run_identifiability
         run_benchmark
+        run_multiscan_design
+        run_multiscan_inverse
+        ;;
+    full)
+        run_forward
+        run_inverse
+        run_identifiability
+        run_benchmark
+        run_posterior
         ;;
     *)
-        echo "MODE must be forward, inverse, identifiability, benchmark, multiscan-design, multiscan-inverse, multiscan, or all" >&2
+        echo "MODE must be forward, posterior, inverse, identifiability, benchmark, multiscan-design, multiscan-inverse, multiscan, all, or full" >&2
         exit 2
         ;;
 esac

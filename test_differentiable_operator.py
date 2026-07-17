@@ -3,14 +3,14 @@ import unittest
 import numpy as np
 import torch
 
-import differentiable_coupled_operator as differentiable
-import pinn_thin_layer_v9_6 as pinn
-import prototype_coupled_productintegral_dtn as numpy_operator
+import differentiable_productintegral_dtn as differentiable
+import physical_model as physics
+import productintegral_dtn as numpy_operator
 
 
 class DifferentiableCoupledOperatorTests(unittest.TestCase):
     def test_torch_recurrence_matches_numpy_forward(self):
-        time = np.linspace(0.0, float(pinn.T_sim), 65)
+        time = np.linspace(0.0, physics.DEFAULT_SIMULATION_TIME, 65)
         for delta in (0.01, 0.035, 0.14):
             expected = numpy_operator.solve_coupled_operator(
                 time,
@@ -40,7 +40,7 @@ class DifferentiableCoupledOperatorTests(unittest.TestCase):
     def test_log_delta_gradient_matches_centered_difference(self):
         time = torch.linspace(
             0.0,
-            float(pinn.T_sim),
+            physics.DEFAULT_SIMULATION_TIME,
             129,
             dtype=torch.float64,
         )
@@ -76,7 +76,7 @@ class DifferentiableCoupledOperatorTests(unittest.TestCase):
     def test_delta_gradient_is_finite_across_calibration_range(self):
         time = torch.linspace(
             0.0,
-            float(pinn.T_sim),
+            physics.DEFAULT_SIMULATION_TIME,
             65,
             dtype=torch.float64,
         )
@@ -132,7 +132,7 @@ class DifferentiableCoupledOperatorTests(unittest.TestCase):
     def test_differentiable_soe_matches_direct_outputs_and_gradient(self):
         time = torch.linspace(
             0.0,
-            float(pinn.T_sim),
+            physics.DEFAULT_SIMULATION_TIME,
             129,
             dtype=torch.float64,
         )
@@ -174,7 +174,7 @@ class DifferentiableCoupledOperatorTests(unittest.TestCase):
     def test_soe_preserves_joint_parameter_gradient(self):
         time = torch.linspace(
             0.0,
-            float(pinn.T_sim),
+            physics.DEFAULT_SIMULATION_TIME,
             65,
             dtype=torch.float64,
         )

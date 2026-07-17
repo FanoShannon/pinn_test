@@ -2,8 +2,8 @@ import unittest
 
 import numpy as np
 
-import fast_abel_history
-import prototype_coupled_productintegral_dtn as coupled
+import productintegral_dtn as coupled
+import soe_abel_history
 
 
 class FastAbelHistoryTests(unittest.TestCase):
@@ -17,7 +17,7 @@ class FastAbelHistoryTests(unittest.TestCase):
             +0.1 * time ** 2
         )
         current[0] = 0.0
-        plan = fast_abel_history.build_soe_history_plan(
+        plan = soe_abel_history.build_soe_history_plan(
             n_steps,
             dt,
             diffusion=1.0,
@@ -25,7 +25,7 @@ class FastAbelHistoryTests(unittest.TestCase):
             n_terms=128,
             tolerance=1e-10,
         )
-        history = fast_abel_history.NumpySoeHistory(plan)
+        history = soe_abel_history.NumpySoeHistory(plan)
         errors = []
         references = []
         for step in range(1, n_steps):
@@ -49,12 +49,12 @@ class FastAbelHistoryTests(unittest.TestCase):
         )
 
     def test_soe_plan_is_positive_and_cached(self):
-        first = fast_abel_history.build_soe_history_plan(
+        first = soe_abel_history.build_soe_history_plan(
             257,
             1.0 / 256.0,
             diffusion=1.0,
         )
-        second = fast_abel_history.build_soe_history_plan(
+        second = soe_abel_history.build_soe_history_plan(
             257,
             1.0 / 256.0,
             diffusion=1.0,
@@ -68,14 +68,14 @@ class FastAbelHistoryTests(unittest.TestCase):
 
     def test_invalid_soe_configuration_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "near_cells"):
-            fast_abel_history.build_soe_history_plan(
+            soe_abel_history.build_soe_history_plan(
                 64,
                 1.0 / 63.0,
                 diffusion=1.0,
                 near_cells=0,
             )
         with self.assertRaisesRegex(ValueError, "n_terms"):
-            fast_abel_history.build_soe_history_plan(
+            soe_abel_history.build_soe_history_plan(
                 64,
                 1.0 / 63.0,
                 diffusion=1.0,

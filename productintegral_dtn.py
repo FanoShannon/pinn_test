@@ -9,47 +9,30 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-import compare_concentration_fields as compare_fields
-import fast_abel_history
-import pinn_thin_layer_v9_6 as pinn
+import physical_model as physics
+import posterior_metrics
+import soe_abel_history
 
 
 def triangular_protocol(time):
-    time = np.asarray(time, dtype=np.float64)
-    simulation_time = float(time[-1])
-    if simulation_time <= 0.0:
-        raise ValueError("The final protocol time must be positive")
-    switch_time = float(pinn.T_switch * simulation_time)
-    theta = np.where(
-        time <= switch_time,
-        float(pinn.theta_i)
-        -2.0 * float(pinn.theta_i - pinn.theta_switch)
-        * time / simulation_time,
-        float(pinn.theta_switch)
-        +2.0 * float(pinn.theta_i - pinn.theta_switch)
-        * (time - switch_time) / simulation_time,
-    )
-    c_b_surface = 1.0 / (1.0 + np.exp(theta))
-    return theta, c_b_surface
+    return physics.triangular_protocol_numpy(time)
 
 
 def characteristic_reaction_flux(gamma, k_cat, delta, diffusion_b):
-    """Film-limited flux scale for one runtime parameter tuple."""
-    return (float(k_cat) * float(gamma)) / (
-        1.0
-        +float(k_cat) * float(gamma) * float(delta) / float(diffusion_b)
+    return physics.characteristic_reaction_flux(
+        gamma,
+        k_cat,
+        delta,
+        diffusion_b,
     )
 
 
 def validate_positive_parameters(gamma, k_cat, delta):
-    values = {
-        "gamma": float(gamma),
-        "k_cat": float(k_cat),
-        "delta": float(delta),
-    }
-    for name, value in values.items():
-        if not np.isfinite(value) or value <= 0.0:
-            raise ValueError(f"{name} must be finite and positive, got {value}")
+    physics.validate_positive_parameters(
+        gamma=gamma,
+        k_cat=k_cat,
+        delta=delta,
+    )
 
 
 def validate_fdm_parameters(fdm, gamma, k_cat, delta):
@@ -58,10 +41,10 @@ def validate_fdm_parameters(fdm, gamma, k_cat, delta):
         "gamma": float(gamma),
         "k_cat": float(k_cat),
         "delta": float(delta),
-        "D_A": float(pinn.D_rel_A),
-        "D_B": float(pinn.D_rel_B),
-        "D_C": float(pinn.D_rel_C),
-        "D_D": float(pinn.D_rel_D),
+        "D_A": physics.TRANSPORT.d_a,
+        "D_B": physics.TRANSPORT.d_b,
+        "D_C": physics.TRANSPORT.d_c,
+        "D_D": physics.TRANSPORT.d_d,
     }
     aliases = {
         "k_cat": ("k_cat", "k_cat_star"),
@@ -195,31 +178,24 @@ def solve_coupled_operator(
     history_soe_tolerance=1e-10,
 ):
     """Couple finite-slab DtN and external Abel ProductIntegral cell by cell."""
-    delta = float(pinn.delta if delta is None else delta)
+    delta = float(physics.DEFAULT_DELTA if delta is None else delta)
     validate_positive_parameters(gamma, k_cat, delta)
-    if not np.isclose(pinn.D_rel_A, pinn.D_rel_B, rtol=0.0, atol=1e-14):
-        raise NotImplementedError(
-            "The C_A=1-C_B reduction requires D_A=D_B"
-        )
-    if not np.isclose(pinn.D_rel_C, pinn.D_rel_D, rtol=0.0, atol=1e-14):
-        raise NotImplementedError(
-            "The C_C=gamma-C_D reduction requires D_C=D_D"
-        )
+    physics.TRANSPORT.validate_reduction()
     time = np.asarray(time, dtype=np.float64)
     if len(time) < 3:
         raise ValueError("At least three time points are required")
     dt_values = np.diff(time)
     dt = float(dt_values[0])
     if not np.allclose(dt_values, dt, rtol=1e-10, atol=1e-14):
-        raise ValueError("The coupled prototype requires a uniform time grid")
+        raise ValueError("The coupled operator requires a uniform time grid")
 
-    diffusion_b = float(pinn.D_rel_B)
-    diffusion_d = float(pinn.D_rel_D)
+    diffusion_b = physics.TRANSPORT.d_b
+    diffusion_d = physics.TRANSPORT.d_d
     if history_backend not in ("direct", "soe"):
         raise ValueError("history_backend must be 'direct' or 'soe'")
     soe_history = None
     if history_backend == "soe":
-        soe_plan = fast_abel_history.build_soe_history_plan(
+        soe_plan = soe_abel_history.build_soe_history_plan(
             len(time),
             dt,
             diffusion_d,
@@ -227,7 +203,7 @@ def solve_coupled_operator(
             n_terms=history_soe_terms,
             tolerance=history_soe_tolerance,
         )
-        soe_history = fast_abel_history.NumpySoeHistory(soe_plan)
+        soe_history = soe_abel_history.NumpySoeHistory(soe_plan)
     thickness = delta
     theta, surface = triangular_protocol(time)
 
@@ -322,7 +298,7 @@ def solve_coupled_operator(
             None if soe_history is None else soe_history.plan.tolerance
         ),
         "external_length": float(
-            pinn.X_ext_factor * np.sqrt(float(time[-1]))
+            physics.EXTERNAL_LENGTH_FACTOR * np.sqrt(float(time[-1]))
         ),
         "time": time,
         "theta": theta,
@@ -543,10 +519,10 @@ def evaluate(
     fdm_time = np.asarray(fdm["t"], dtype=np.float64)
     x_fdm = np.asarray(fdm["x_in"], dtype=np.float64)
     x_out_fdm = np.asarray(fdm["x_out"], dtype=np.float64)
-    time_indices = compare_fields.select_indices(len(time), n_time)
-    x_indices = compare_fields.select_indices(len(x_fdm), n_x)
-    x_out_indices = compare_fields.select_indices(len(x_out_fdm), n_x_out)
-    cv_indices = compare_fields.select_indices(len(time), cv_points)
+    time_indices = posterior_metrics.select_indices(len(time), n_time)
+    x_indices = posterior_metrics.select_indices(len(x_fdm), n_x)
+    x_out_indices = posterior_metrics.select_indices(len(x_out_fdm), n_x_out)
+    cv_indices = posterior_metrics.select_indices(len(time), cv_points)
     x_eval = x_fdm[x_indices]
     x_out_eval = x_out_fdm[x_out_indices]
     state = reconstruct_state(history, x_eval)
@@ -622,88 +598,88 @@ def evaluate(
     )
 
     metrics = {
-        "C_A": compare_fields.field_metrics(1.0 - state["C_B"][time_indices], 1.0 - fdm_b),
-        "C_B": compare_fields.field_metrics(state["C_B"][time_indices], fdm_b),
-        "C_B_int": compare_fields.field_metrics(
+        "C_A": posterior_metrics.field_metrics(1.0 - state["C_B"][time_indices], 1.0 - fdm_b),
+        "C_B": posterior_metrics.field_metrics(state["C_B"][time_indices], fdm_b),
+        "C_B_int": posterior_metrics.field_metrics(
             history["C_B_int"][time_indices],
             fdm_b_int,
         ),
-        "C_C_int": compare_fields.field_metrics(
+        "C_C_int": posterior_metrics.field_metrics(
             history["C_C_int"][time_indices],
             fdm_c_c_int,
         ),
-        "C_C_int_over_gamma": compare_fields.field_metrics(
+        "C_C_int_over_gamma": posterior_metrics.field_metrics(
             history["C_C_int"][time_indices] / gamma,
             fdm_c_c_int / gamma,
         ),
-        "C_C": compare_fields.field_metrics(predicted_c, fdm_c),
-        "C_D": compare_fields.field_metrics(predicted_d, fdm_d),
-        "C_C_over_gamma": compare_fields.field_metrics(
+        "C_C": posterior_metrics.field_metrics(predicted_c, fdm_c),
+        "C_D": posterior_metrics.field_metrics(predicted_d, fdm_d),
+        "C_C_over_gamma": posterior_metrics.field_metrics(
             predicted_c / gamma,
             fdm_c / gamma,
         ),
-        "C_D_over_gamma": compare_fields.field_metrics(
+        "C_D_over_gamma": posterior_metrics.field_metrics(
             predicted_d / gamma,
             fdm_d / gamma,
         ),
-        "J_rxn": compare_fields.field_metrics(
+        "J_rxn": posterior_metrics.field_metrics(
             history["J_rxn"][time_indices],
             fdm_reaction,
         ),
-        "CV_J_surface": compare_fields.field_metrics(
+        "CV_J_surface": posterior_metrics.field_metrics(
             predicted_current,
             fdm_current,
         ),
-        "CV_J_surface_vs_FDM_thin_balance": compare_fields.field_metrics(
+        "CV_J_surface_vs_FDM_thin_balance": posterior_metrics.field_metrics(
             predicted_current,
             fdm_balance_current,
         ),
-        "CV_J_inventory_centered": compare_fields.field_metrics(
+        "CV_J_inventory_centered": posterior_metrics.field_metrics(
             predicted_centered,
             fdm_current,
         ),
         "CV_J_inventory_centered_vs_FDM_thin_balance": (
-            compare_fields.field_metrics(
+            posterior_metrics.field_metrics(
                 predicted_centered,
                 fdm_balance_current,
             )
         ),
-        "CV_J_inventory_backward": compare_fields.field_metrics(
+        "CV_J_inventory_backward": posterior_metrics.field_metrics(
             predicted_backward,
             fdm_current,
         ),
-        "CV_J_surface_over_J_ref": compare_fields.field_metrics(
+        "CV_J_surface_over_J_ref": posterior_metrics.field_metrics(
             predicted_current / j_ref,
             fdm_current / j_ref,
         ),
         "CV_J_surface_vs_FDM_thin_balance_over_J_ref": (
-            compare_fields.field_metrics(
+            posterior_metrics.field_metrics(
                 predicted_current / j_ref,
                 fdm_balance_current / j_ref,
             )
         ),
-        "CV_J_inventory_centered_over_J_ref": compare_fields.field_metrics(
+        "CV_J_inventory_centered_over_J_ref": posterior_metrics.field_metrics(
             predicted_centered / j_ref,
             fdm_current / j_ref,
         ),
-        "CV_J_inventory_backward_over_J_ref": compare_fields.field_metrics(
+        "CV_J_inventory_backward_over_J_ref": posterior_metrics.field_metrics(
             predicted_backward / j_ref,
             fdm_current / j_ref,
         ),
-        "surface_vs_centered_inventory": compare_fields.field_metrics(
+        "surface_vs_centered_inventory": posterior_metrics.field_metrics(
             predicted_current / j_ref,
             predicted_centered / j_ref,
         ),
-        "surface_vs_backward_inventory": compare_fields.field_metrics(
+        "surface_vs_backward_inventory": posterior_metrics.field_metrics(
             predicted_current / j_ref,
             predicted_backward / j_ref,
         ),
-        "FDM_surface_vs_thin_balance": compare_fields.field_metrics(
+        "FDM_surface_vs_thin_balance": posterior_metrics.field_metrics(
             fdm_current,
             fdm_balance_current,
         ),
         "FDM_surface_vs_thin_balance_over_J_ref": (
-            compare_fields.field_metrics(
+            posterior_metrics.field_metrics(
                 fdm_current / j_ref,
                 fdm_balance_current / j_ref,
             )
@@ -883,7 +859,7 @@ def parse_mode_counts(text):
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Zero-training coupled ProductIntegral-finite-slab DtN prototype. "
+            "Zero-training coupled ProductIntegral-finite-slab DtN solver. "
             "FDM is used only for posterior metrics."
         )
     )
@@ -891,7 +867,7 @@ def parse_args():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--gamma", type=float, default=10.0)
     parser.add_argument("--k-cat", type=float, default=1.0)
-    parser.add_argument("--delta", type=float, default=float(pinn.delta))
+    parser.add_argument("--delta", type=float, default=physics.DEFAULT_DELTA)
     parser.add_argument("--operator-time-grid", type=int, default=256)
     parser.add_argument("--mode-counts", default="32,64,128,256")
     parser.add_argument("--newton-iterations", type=int, default=12)
@@ -922,10 +898,6 @@ def main():
     args.fdm_pkl = args.fdm_pkl.resolve()
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    pinn.configure_physical_parameters(
-        gamma_value=args.gamma,
-        k_cat_value=args.k_cat,
-    )
     validate_positive_parameters(args.gamma, args.k_cat, args.delta)
 
     with args.fdm_pkl.open("rb") as handle:
@@ -935,7 +907,7 @@ def main():
         raise ValueError("operator-time-grid must be at least 3")
     time = np.linspace(
         0.0,
-        float(pinn.T_sim),
+        physics.DEFAULT_SIMULATION_TIME,
         args.operator_time_grid,
     )
 
@@ -982,8 +954,7 @@ def main():
         )
 
     report = {
-        "prototype": "coupled_productintegral_finite_slab_dtn",
-        "checkpoint_used": False,
+        "solver": "coupled_productintegral_finite_slab_dtn",
         "training_steps": 0,
         "fdm_role": "posterior_only",
         "spatial_grid_in_operator": False,
@@ -998,8 +969,8 @@ def main():
             "gamma": float(args.gamma),
             "k_cat": float(args.k_cat),
             "delta": float(args.delta),
-            "D_B": float(pinn.D_rel_B),
-            "D_D": float(pinn.D_rel_D),
+            "D_B": physics.TRANSPORT.d_b,
+            "D_D": physics.TRANSPORT.d_d,
         },
         "mode_results": all_metrics,
     }

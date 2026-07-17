@@ -6,9 +6,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-import differentiable_coupled_operator as differentiable
-import pinn_thin_layer_v9_6 as pinn
-import prototype_coupled_productintegral_dtn as numpy_operator
+import differentiable_productintegral_dtn as differentiable
+import physical_model as physics
+import productintegral_dtn as numpy_operator
 
 
 def parse_values(text):
@@ -47,7 +47,7 @@ def high_resolution_target(
     target_modes,
     observation_time,
 ):
-    time = np.linspace(0.0, float(pinn.T_sim), target_time_grid)
+    time = np.linspace(0.0, physics.DEFAULT_SIMULATION_TIME, target_time_grid)
     history = numpy_operator.solve_coupled_operator(
         time,
         gamma=gamma,
@@ -235,7 +235,7 @@ def main():
 
     observation_time = np.linspace(
         0.0,
-        float(pinn.T_sim),
+        physics.DEFAULT_SIMULATION_TIME,
         args.observation_points,
     )
     rng = np.random.default_rng(args.seed)

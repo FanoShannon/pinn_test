@@ -5,8 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-import pinn_thin_layer_v9_6 as pinn
-import prototype_coupled_productintegral_dtn as coupled
+import physical_model as physics
+import productintegral_dtn as coupled
 
 
 def parse_values(text):
@@ -55,7 +55,7 @@ def main():
     if args.time_grid < 3 or args.modes < 1:
         raise ValueError("time-grid and modes must be positive")
 
-    time = np.linspace(0.0, float(pinn.T_sim), args.time_grid)
+    time = np.linspace(0.0, physics.DEFAULT_SIMULATION_TIME, args.time_grid)
     rows = []
     failures = []
     args.output_dir = args.output_dir.resolve()
@@ -112,13 +112,17 @@ def main():
                         "k_cat": k_cat,
                         "gamma": gamma,
                         "delta": delta,
-                        "Da": k_cat * gamma * delta / pinn.D_rel_B,
-                        "Fo_T": pinn.D_rel_B * pinn.T_sim / delta ** 2,
+                        "Da": k_cat * gamma * delta / physics.TRANSPORT.d_b,
+                        "Fo_T": (
+                            physics.TRANSPORT.d_b
+                            * physics.DEFAULT_SIMULATION_TIME
+                            / delta ** 2
+                        ),
                         "J_ref": coupled.characteristic_reaction_flux(
                             gamma,
                             k_cat,
                             delta,
-                            pinn.D_rel_B,
+                            physics.TRANSPORT.d_b,
                         ),
                         "finite": bool(finite),
                         "bounds_error": float(bounds_error),

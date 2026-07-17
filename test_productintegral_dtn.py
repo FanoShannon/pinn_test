@@ -2,16 +2,13 @@ import unittest
 
 import numpy as np
 
-import pinn_thin_layer_v9_6 as pinn
-import prototype_coupled_productintegral_dtn as coupled
+import physical_model as physics
+import productintegral_dtn as coupled
 
 
 class CoupledThinDtnOperatorTests(unittest.TestCase):
     def tearDown(self):
-        pinn.configure_physical_parameters(
-            pinn.REFERENCE_GAMMA,
-            pinn.REFERENCE_K_CAT_STAR,
-        )
+        physics.TRANSPORT.validate_reduction()
 
     def test_scalar_reaction_closure_root(self):
         value, iterations, residual = coupled.reaction_closure_root(
@@ -29,7 +26,7 @@ class CoupledThinDtnOperatorTests(unittest.TestCase):
         self.assertLessEqual(iterations, 12)
 
     def test_coupled_operator_is_finite_and_closed_across_parameters(self):
-        time = np.linspace(0.0, float(pinn.T_sim), 64)
+        time = np.linspace(0.0, physics.DEFAULT_SIMULATION_TIME, 64)
         for k_cat, gamma, delta in (
             (0.1, 0.1, 0.0175),
             (0.01, 1.0, 0.035),
@@ -38,7 +35,6 @@ class CoupledThinDtnOperatorTests(unittest.TestCase):
             (1.0, 100.0, 0.035),
             (100.0, 10.0, 0.01),
         ):
-            pinn.configure_physical_parameters(gamma, k_cat)
             history = coupled.solve_coupled_operator(
                 time,
                 gamma,
@@ -68,8 +64,7 @@ class CoupledThinDtnOperatorTests(unittest.TestCase):
             )
 
     def test_initial_state_is_exact(self):
-        pinn.configure_physical_parameters(10.0, 1.0)
-        time = np.linspace(0.0, float(pinn.T_sim), 32)
+        time = np.linspace(0.0, physics.DEFAULT_SIMULATION_TIME, 32)
         history = coupled.solve_coupled_operator(
             time,
             gamma=10.0,
@@ -93,7 +88,7 @@ class CoupledThinDtnOperatorTests(unittest.TestCase):
             "params": {
                 "gamma": 10.0,
                 "k_cat": 1.0,
-                "delta": float(pinn.delta),
+                "delta": physics.DEFAULT_DELTA,
                 "D_A": 1.0,
                 "D_B": 1.0,
                 "D_C": 1.0,
@@ -104,21 +99,21 @@ class CoupledThinDtnOperatorTests(unittest.TestCase):
             fdm,
             gamma=10.0,
             k_cat=1.0,
-            delta=float(pinn.delta),
+            delta=physics.DEFAULT_DELTA,
         )
         with self.assertRaisesRegex(ValueError, "gamma"):
             coupled.validate_fdm_parameters(
                 fdm,
                 gamma=1.0,
                 k_cat=1.0,
-                delta=float(pinn.delta),
+                delta=physics.DEFAULT_DELTA,
             )
         with self.assertRaisesRegex(ValueError, "k_cat"):
             coupled.validate_fdm_parameters(
                 fdm,
                 gamma=10.0,
                 k_cat=0.1,
-                delta=float(pinn.delta),
+                delta=physics.DEFAULT_DELTA,
             )
         with self.assertRaisesRegex(ValueError, "delta"):
             coupled.validate_fdm_parameters(
@@ -129,7 +124,7 @@ class CoupledThinDtnOperatorTests(unittest.TestCase):
             )
 
     def test_runtime_delta_is_repeatable_and_changes_the_mode_spectrum(self):
-        time = np.linspace(0.0, float(pinn.T_sim), 64)
+        time = np.linspace(0.0, physics.DEFAULT_SIMULATION_TIME, 64)
         first = coupled.solve_coupled_operator(
             time,
             gamma=10.0,
@@ -178,7 +173,7 @@ class CoupledThinDtnOperatorTests(unittest.TestCase):
         )
 
     def test_explicit_reference_delta_matches_default(self):
-        time = np.linspace(0.0, float(pinn.T_sim), 48)
+        time = np.linspace(0.0, physics.DEFAULT_SIMULATION_TIME, 48)
         default = coupled.solve_coupled_operator(
             time,
             gamma=10.0,
@@ -192,14 +187,13 @@ class CoupledThinDtnOperatorTests(unittest.TestCase):
             k_cat=1.0,
             n_modes=16,
             newton_iterations=12,
-            delta=float(pinn.delta),
+            delta=physics.DEFAULT_DELTA,
         )
         for name in ("C_B_int", "C_C_int", "J_rxn", "amplitudes"):
             np.testing.assert_array_equal(default[name], explicit[name])
 
     def test_tracegreen_preserves_interface_and_far_boundary(self):
-        pinn.configure_physical_parameters(10.0, 1.0)
-        time = np.linspace(0.0, float(pinn.T_sim), 64)
+        time = np.linspace(0.0, physics.DEFAULT_SIMULATION_TIME, 64)
         history = coupled.solve_coupled_operator(
             time,
             gamma=10.0,
@@ -211,7 +205,9 @@ class CoupledThinDtnOperatorTests(unittest.TestCase):
         time_eval = np.array([0.0, 0.17, 0.51, 0.83, 1.0])
         x_eval = np.array([
             0.07,
-            0.07 + float(pinn.X_ext_factor * np.sqrt(pinn.T_sim)),
+            0.07
+            + physics.EXTERNAL_LENGTH_FACTOR
+            * np.sqrt(physics.DEFAULT_SIMULATION_TIME),
         ])
         _, c_d = coupled.tracegreen_external_field(
             history,
@@ -239,7 +235,7 @@ class CoupledThinDtnOperatorTests(unittest.TestCase):
         )
 
     def test_gauss_tracegreen_converges_faster_than_midpoint(self):
-        time = np.linspace(0.0, float(pinn.T_sim), 256)
+        time = np.linspace(0.0, physics.DEFAULT_SIMULATION_TIME, 256)
         history = coupled.solve_coupled_operator(
             time,
             gamma=10.0,
@@ -248,7 +244,7 @@ class CoupledThinDtnOperatorTests(unittest.TestCase):
             newton_iterations=12,
             delta=0.14,
         )
-        time_eval = np.linspace(0.0, float(pinn.T_sim), 17)
+        time_eval = np.linspace(0.0, physics.DEFAULT_SIMULATION_TIME, 17)
         x_eval = np.linspace(0.14, 6.14, 19)
         _, reference = coupled.tracegreen_external_field(
             history,
@@ -279,7 +275,7 @@ class CoupledThinDtnOperatorTests(unittest.TestCase):
         self.assertLess(gauss_error, 0.2 * midpoint_error)
 
     def test_soe_operator_matches_direct_history_across_parameters(self):
-        time = np.linspace(0.0, float(pinn.T_sim), 257)
+        time = np.linspace(0.0, physics.DEFAULT_SIMULATION_TIME, 257)
         for k_cat, gamma, delta in (
             (0.1, 0.1, 0.14),
             (1.0, 10.0, 0.035),

@@ -5,8 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-import pinn_thin_layer_v9_6 as pinn
-import prototype_coupled_productintegral_dtn as coupled
+import physical_model as physics
+import productintegral_dtn as coupled
 
 
 def parse_float_list(text):
@@ -44,7 +44,7 @@ def relative_l2(values, scale_values):
 
 
 def solve_state(delta, gamma, k_cat, n_time, n_modes, newton_iterations):
-    time = np.linspace(0.0, float(pinn.T_sim), int(n_time))
+    time = np.linspace(0.0, physics.DEFAULT_SIMULATION_TIME, int(n_time))
     history = coupled.solve_coupled_operator(
         time,
         gamma=gamma,
@@ -294,13 +294,19 @@ def main():
                     args.k_cat
                     *args.gamma
                     *delta
-                    /float(pinn.D_rel_B)
+                    /physics.TRANSPORT.d_b
                 ),
                 "Fo_T": float(
-                    pinn.D_rel_B * pinn.T_sim / delta ** 2
+                    physics.TRANSPORT.d_b
+                    * physics.DEFAULT_SIMULATION_TIME
+                    / delta ** 2
                 ),
                 "K_external": float(
-                    args.k_cat * np.sqrt(pinn.T_sim / pinn.D_rel_D)
+                    args.k_cat
+                    * np.sqrt(
+                        physics.DEFAULT_SIMULATION_TIME
+                        / physics.TRANSPORT.d_d
+                    )
                 ),
             },
             "sensitivity": sensitivity,
@@ -320,9 +326,9 @@ def main():
         "parameters": {
             "gamma": float(args.gamma),
             "k_cat": float(args.k_cat),
-            "D_B": float(pinn.D_rel_B),
-            "D_D": float(pinn.D_rel_D),
-            "T_sim": float(pinn.T_sim),
+            "D_B": physics.TRANSPORT.d_b,
+            "D_D": physics.TRANSPORT.d_d,
+            "T_sim": physics.DEFAULT_SIMULATION_TIME,
         },
         "reference_resolution": {
             "n_time": int(args.reference_time_grid),

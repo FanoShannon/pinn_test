@@ -5,8 +5,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-import differentiable_coupled_operator as differentiable
-import pinn_thin_layer_v9_6 as pinn
+import differentiable_productintegral_dtn as differentiable
+import physical_model as physics
 
 
 PARAMETER_NAMES = ("log_k_cat", "log_gamma", "log_delta")
@@ -143,7 +143,7 @@ def main():
         for sigma in sigmas:
             simulation_time = (
                 2.0
-                *abs(float(pinn.theta_i - pinn.theta_switch))
+                * abs(physics.THETA_INITIAL - physics.THETA_SWITCH)
                 /sigma
             )
             time = torch.linspace(

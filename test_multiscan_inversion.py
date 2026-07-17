@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import torch
 
-import differentiable_coupled_operator as differentiable
+import differentiable_productintegral_dtn as differentiable
 from design_multiscan_rates import matrix_metrics, rank_combinations
 from invert_multiscan_parameters import (
     PARAMETER_NAMES,

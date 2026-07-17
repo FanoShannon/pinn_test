@@ -1,23 +1,23 @@
 import numpy as np
 import torch
 
-import fast_abel_history
-import pinn_thin_layer_v9_6 as pinn
+import physical_model as physics
+import soe_abel_history
 
 
 def triangular_protocol(time):
     simulation_time = time[-1]
-    switch_time = float(pinn.T_switch) * simulation_time
+    switch_time = physics.SWITCH_FRACTION * simulation_time
     theta = torch.where(
         time <= switch_time,
-        float(pinn.theta_i)
+        physics.THETA_INITIAL
         -2.0
-        *float(pinn.theta_i - pinn.theta_switch)
+        *(physics.THETA_INITIAL - physics.THETA_SWITCH)
         *time
         /simulation_time,
-        float(pinn.theta_switch)
+        physics.THETA_SWITCH
         +2.0
-        *float(pinn.theta_i - pinn.theta_switch)
+        *(physics.THETA_INITIAL - physics.THETA_SWITCH)
         *(time - switch_time)
         /simulation_time,
     )
@@ -115,8 +115,9 @@ def solve_coupled_operator(
     if not torch.allclose(dt_values, dt, rtol=1e-10, atol=1e-14):
         raise ValueError("The differentiable operator requires uniform time")
 
-    diffusion_b = float(pinn.D_rel_B)
-    diffusion_d = float(pinn.D_rel_D)
+    physics.TRANSPORT.validate_reduction()
+    diffusion_b = physics.TRANSPORT.d_b
+    diffusion_d = physics.TRANSPORT.d_d
     if history_backend not in ("direct", "soe"):
         raise ValueError("history_backend must be 'direct' or 'soe'")
     soe_plan = None
@@ -125,7 +126,7 @@ def solve_coupled_operator(
     soe_tail_amplitudes = None
     soe_tail_state = None
     if history_backend == "soe":
-        soe_plan = fast_abel_history.build_soe_history_plan(
+        soe_plan = soe_abel_history.build_soe_history_plan(
             len(time),
             float(dt.detach().cpu()),
             diffusion_d,
