@@ -5,9 +5,9 @@
 This study tests whether cyclic-voltammetry currents acquired at several scan
 rates can identify the three positive physical parameters
 
-\[
+$$
 \mathbf p=(k_{\mathrm{cat}},\gamma,\delta).
-\]
+$$
 
 The inverse workflow is entirely FDM-free and neural-network-free:
 
@@ -27,28 +27,37 @@ The scripts are:
 
 ## Multi-scan forward map
 
-For scan rate \(\sigma_s\), the duration of one triangular cycle is
+For scan rate $\sigma_s$, the duration of one triangular cycle is
 
-\[
+$$
 T_s=\frac{2|\theta_i-\theta_{\mathrm{switch}}|}{\sigma_s}.
-\]
+$$
 
 Every scan is propagated independently through the same parameter vector:
 
-\[
+$$
 I_s(t;\mathbf p)
-=\mathcal F_{\mathrm{PI-DtN}}
+=\mathcal{F}_{\mathrm{PI-DtN}}
 \left(t,T_s;k_{\mathrm{cat}},\gamma,\delta\right).
-\]
+$$
 
 The physical closure contains
 
-\[
-Da_i=\frac{k_{\mathrm{cat}}\,\delta\,C_{C,i}}{D_B},
+$$
+\mathrm{Da}_i
+=\frac{k_{\mathrm{cat}}\,\delta\,C_{C,i}}{D_B},
 \qquad
+ C_{B,i}=\frac{C_{B,s}}{1+\mathrm{Da}_i},
+$$
+
+and therefore
+
+$$
 J
-=\frac{D_B}{\delta}C_{B,s}\frac{Da_i}{1+Da_i},
-\]
+=k_{\mathrm{cat}}C_{B,i}C_{C,i}
+=\frac{D_B}{\delta}C_{B,s}
+\frac{\mathrm{Da}_i}{1+\mathrm{Da}_i}.
+$$
 
 coupled to the ProductIntegral external history and the exact finite-slab
 modal DtN response. Changing the scan rate changes the relative time scales of
@@ -58,32 +67,38 @@ That is the source of additional inverse information.
 ## Parameterization and objective
 
 Optimization is performed in bounded logarithmic coordinates. For each free
-parameter \(p_j\),
+parameter $p_j$,
 
-\[
+$$
 p_j(z_j)
 =\exp\left[
 \log p_{j,\min}
 +\left(\log p_{j,\max}-\log p_{j,\min}\right)
 \frac{1}{1+e^{-z_j}}
 \right].
-\]
+$$
 
 This enforces positivity and prevents an optimizer step from entering a
 nonphysical region. The default bounds are
 
-\[
+$$
 0.01<k_{\mathrm{cat}}<100,
 \qquad
 0.1<\gamma<100,
 \qquad
 0.005<\delta<0.2.
-\]
+$$
 
 Each scan is normalized by its observed clean-current span
-\(\Delta I_s\), then scans are weighted equally:
+$\Delta I_s$, then scans are weighted equally:
 
-\[
+$$
+\Delta I_s
+=\max_n I_{s,n}^{\mathrm{clean}}
+-\min_n I_{s,n}^{\mathrm{clean}}.
+$$
+
+$$
 \mathcal L(\mathbf p)
 =\frac{1}{N_s}
 \sum_{s=1}^{N_s}
@@ -92,35 +107,49 @@ Each scan is normalized by its observed clean-current span
 \left[
 \frac{I_s(t_n;\mathbf p)-I_{s,n}^{\mathrm{obs}}}{\Delta I_s}
 \right]^2.
-\]
+$$
 
-The initial point \(t_0\) is excluded because the causal current convention
+The initial point $t_0$ is excluded because the causal current convention
 sets it separately. FDM never appears in this loss.
 
 Supported inverse modes are:
 
-- `all`: infer \(k_{\mathrm{cat}},\gamma,\delta\);
-- `fix-gamma`: infer \(k_{\mathrm{cat}},\delta\);
-- `fix-k`: infer \(\gamma,\delta\);
-- `fix-delta`: infer \(k_{\mathrm{cat}},\gamma\);
+- `all`: infer $k_{\mathrm{cat}},\gamma,\delta$;
+- `fix-gamma`: infer $k_{\mathrm{cat}},\delta$;
+- `fix-k`: infer $\gamma,\delta$;
+- `fix-delta`: infer $k_{\mathrm{cat}},\gamma$;
 - `k-only`, `gamma-only`, and `delta-only` for asymptotic fallbacks.
 
 ## Scan-rate design
 
 For each scan, the relative sensitivity matrix is
 
-\[
+$$
 S_s
 =\frac{1}{\Delta I_s}
-\frac{\partial I_s}{\partial
-(\log k_{\mathrm{cat}},\log\gamma,\log\delta)}.
-\]
+\left[
+\frac{\partial \mathbf I_s}{\partial\log k_{\mathrm{cat}}}
+\quad
+\frac{\partial \mathbf I_s}{\partial\log\gamma}
+\quad
+\frac{\partial \mathbf I_s}{\partial\log\delta}
+\right],
+$$
+
+where $\mathbf I_s$ is the vector of current samples for scan $s$. Thus
+$S_s\in\mathbb{R}^{(N_t-1)\times3}$ when all three parameters are free.
 
 The multi-scan matrix is the vertical stack
 
-\[
-S=\begin{bmatrix}S_1\\S_2\\\cdots\\S_{N_s}\end{bmatrix}.
-\]
+$$
+S
+=\left[
+S_1^{\mathsf T},
+S_2^{\mathsf T},
+\ldots,
+S_{N_s}^{\mathsf T}
+\right]^{\mathsf T}.
+$$
 
 `design_multiscan_rates.py` computes these derivatives by exact PyTorch JVPs,
 then ranks candidate combinations by the worst column-normalized condition
@@ -128,7 +157,7 @@ number over requested parameter cases. Column normalization separates
 sensitivity shape correlation from trivial differences in parameter
 magnitude.
 
-At \((k,\gamma,\delta)=(1,10,0.035)\), previous high-resolution sensitivity
+At $(k,\gamma,\delta)=(1,10,0.035)$, previous high-resolution sensitivity
 results were:
 
 | Scan rates | Raw Jacobian condition | corr(log k, log gamma) | corr(log k, log delta) | corr(log gamma, log delta) |
@@ -139,7 +168,7 @@ results were:
 
 Nearby scan rates provide redundant information. Wide separation is much
 more useful. A broader candidate search selected slow/fast combinations such
-as \(\{2.5,320,640\}\), but no fixed set removes the asymptotic loss of
+as $\{2.5,320,640\}$, but no fixed set removes the asymptotic loss of
 chemical sensitivity over the entire positive parameter domain.
 
 ## Blind synthetic inversion results
@@ -157,9 +186,9 @@ were used for the first two rows.
 | (0.3, 30, 0.07) | 2.5, 40, 640 | 0 | k, gamma, delta | (0.294667, 30.2424, 0.0691146) | 1.78% |
 | (3, 3, 0.07) | 2.5, 40, 640 | 0 | k, gamma, delta | (2.98118, 2.99835, 0.0692193) | 1.12% |
 
-The last two cases have the same product \(k\gamma=9\), yet the inverse
+The last two cases have the same product $k\gamma=9$, yet the inverse
 separates their individual values. The operator is therefore using the
-independent effect of \(\gamma\) on external inventory and history, not only
+independent effect of $\gamma$ on external inventory and history, not only
 the local Damkoehler product.
 
 At 1% noise, the three-scan maximum parameter error was about thirteen times
@@ -168,8 +197,8 @@ a synthetic result, not yet a confidence interval over repeated experiments.
 
 ### Single-scan optimization ablation
 
-With one \(\sigma=40\) curve and a 36-iteration LBFGS budget, four starts
-ended with \(\delta\) between `0.02590` and `0.03530`; two starts retained
+With one $\sigma=40$ curve and a 36-iteration LBFGS budget, four starts
+ended with $\delta$ between `0.02590` and `0.03530`; two starts retained
 17-26% parameter error. Increasing the budget to 100 iterations recovered the
 noiseless reference, showing that the single-scan problem is a narrow,
 ill-conditioned valley rather than necessarily an exact continuum of
@@ -180,44 +209,63 @@ valley.
 
 ### Low-reaction limit
 
-When \(k\gamma\) is small, the reaction contribution is a weak perturbation
+When $k\gamma$ is small, the reaction contribution is a weak perturbation
 of the electrode diffusion current and the leading chemistry dependence is
-close to a product. For
+close to a product. In particular,
 
-\[
+$$
+C_{C,i}\approx\gamma,
+\qquad
+\mathrm{Da}_i\ll1,
+\qquad
+J\approx k_{\mathrm{cat}}C_{B,s}\gamma.
+$$
+
+For
+
+$$
 (k,\gamma,\delta)=(0.1,0.1,0.035),
-\]
+$$
 
 three-scan multi-start inversion produced a low-objective false solution with
-\(k=0.01\), \(\gamma=0.809\), while other starts approached the truth. The
-best stable three-parameter branch had 7.73% maximum error. Fixing \(\gamma\)
-gave a unique \((k,\delta)\) solution with 4.28% maximum error.
+$k=0.01$, $\gamma=0.809$, while other starts approached the truth. The
+best stable three-parameter branch had 7.73% maximum error. Fixing $\gamma$
+gave a unique $(k,\delta)$ solution with 4.28% maximum error.
 
 ### High-Damkoehler saturation
 
-For large \(Da_i\),
+For large $\mathrm{Da}_i$,
 
-\[
-\frac{Da_i}{1+Da_i}\longrightarrow1,
+$$
+\frac{\mathrm{Da}_i}{1+\mathrm{Da}_i}\longrightarrow1,
 \qquad
-\frac{\partial\log J}{\partial\log k}
-\sim\frac{1}{1+Da_i}\longrightarrow0.
-\]
+\left.
+\frac{\partial\log J}{\partial\log k_{\mathrm{cat}}}
+\right|_{C_{B,s},C_{C,i},\delta}
+=\frac{1}{1+\mathrm{Da}_i}
+\longrightarrow0.
+$$
+
+This derivative is the local kinetic sensitivity with the indicated
+concentration state held fixed. In this model, $C_{B,s}$ is prescribed by the
+Nernst boundary condition. The fully coupled sensitivity additionally contains
+the response of $C_{C,i}$ and both history operators, and is evaluated
+numerically by JVP.
 
 Thus the current loses kinetic information. At
 
-\[
+$$
 (k,\gamma,\delta)=(10,100,0.14),
-\]
+$$
 
-three starts with almost indistinguishable objectives returned \(k\) from
-`0.084` to `50.10` and \(\gamma\) from `245` to `552`. Fixing any one of the
+three starts with almost indistinguishable objectives returned $k$ from
+`0.084` to `50.10` and $\gamma$ from `245` to `552`. Fixing any one of the
 three parameters was still insufficient to identify the other two. With
-known \(k\) and \(\gamma\), however, `delta-only` inversion recovered
+known $k$ and $\gamma$, however, `delta-only` inversion recovered
 
-\[
-\widehat\delta=0.140148,
-\]
+$$
+\widehat{\delta}=0.140148,
+$$
 
 an error of 0.106%. In the same regime, even `k-only` and `gamma-only`
 inversion retained about 10.9% and 8.6% errors because their sensitivities are
@@ -227,12 +275,12 @@ smaller than the target/inverse discretization mismatch.
 
 The current evidence supports a regime-aware statement:
 
-1. simultaneous \((k,\gamma,\delta)\) inversion from several widely separated
+1. simultaneous $(k,\gamma,\delta)$ inversion from several widely separated
    scan rates is viable in an interior, sensitivity-qualified parameter
    region;
 2. a local SVD/condition audit and multi-start agreement must accompany every
    reported inverse result;
-3. fixing independently measurable bulk \(\gamma\) is the preferred first
+3. fixing independently measurable bulk $\gamma$ is the preferred first
    fallback in weak-reaction cases;
 4. in transport-saturated cases, CV current alone cannot recover kinetic or
    bulk chemical parameters, and only geometric inversion remains reliable
