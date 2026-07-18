@@ -3,5 +3,6 @@ __pycache__/
 *.log
 outputs/
 runs_curved_film_3d/
+runs_curved_heat_bem/
 *.npz
 *.png

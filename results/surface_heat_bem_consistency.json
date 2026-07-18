@@ -1,0 +1,23 @@
+{
+  "status": "single_layer_consistency_prototype",
+  "full_heat_bie_solved": false,
+  "film_dtn_included": false,
+  "time_steps": 17,
+  "duration": 0.03,
+  "periodic_images": 3,
+  "triangle_quadrature_points": 3,
+  "time_quadrature_order": 6,
+  "flat_uniform_abel_limit": [
+    {"n_side": 3, "n_panels": 18, "nrmse": 0.005838986751408026, "max_relative": 0.010197284764967767},
+    {"n_side": 4, "n_panels": 32, "nrmse": 0.005472930770955903, "max_relative": 0.0087804949524061},
+    {"n_side": 6, "n_panels": 72, "nrmse": 0.004116781534219633, "max_relative": 0.006516199686086147},
+    {"n_side": 8, "n_panels": 128, "nrmse": 0.003269997184517142, "max_relative": 0.005179565693138518}
+  ],
+  "curved_cap_convergence": [
+    {"n_radial": 2, "n_angular": 12, "n_panels": 36, "mean_trace_nrmse_vs_finest": 0.013964073337215827},
+    {"n_radial": 3, "n_angular": 16, "n_panels": 80, "mean_trace_nrmse_vs_finest": 0.005391108374070916},
+    {"n_radial": 4, "n_angular": 20, "n_panels": 140, "mean_trace_nrmse_vs_finest": 0.0}
+  ],
+  "curved_vs_flat_geometry_correction_nrmse": 0.03822687276848389,
+  "nonaxisymmetric_trace_index": 0.250675957921752
+}

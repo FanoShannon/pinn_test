@@ -7,6 +7,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-/content/gdrive/MyDrive/curved_film_3d/prototype}"
 cd "$ROOT_DIR"
 python -m pip install -q -r requirements.txt
 python -m unittest -v test_curved_film_3d.py
+python -m unittest -v test_surface_heat_bem.py
 python run_curved_film_3d.py \
   --output "$OUTPUT_DIR" \
   --steps "${STEPS:-33}" \
@@ -25,6 +26,15 @@ if [[ "${RUN_CONVERGENCE:-1}" == "1" ]]; then
     --output "$OUTPUT_DIR/convergence" \
     --steps "${CONVERGENCE_STEPS:-13}" \
     --duration "${CONVERGENCE_DURATION:-0.015}"
+fi
+
+if [[ "${RUN_BEM_CONSISTENCY:-1}" == "1" ]]; then
+  python analyze_surface_heat_bem_consistency.py \
+    --output "$OUTPUT_DIR/bem_consistency" \
+    --steps "${BEM_STEPS:-17}" \
+    --duration "${BEM_DURATION:-0.03}" \
+    --periodic-images "${BEM_PERIODIC_IMAGES:-3}" \
+    --quadrature "${BEM_QUADRATURE:-6}"
 fi
 
 if [[ "${RUN_FDM_VALIDATION:-1}" == "1" ]]; then
