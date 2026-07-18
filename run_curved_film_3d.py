@@ -68,7 +68,8 @@ def plot_result(result, output):
     combined = np.where(
         geometry["film_mask"][:, y_index, :],
         b_field[:, y_index, :],
-        result["parameters"].gamma - d_field[:, y_index, :],
+        (result["parameters"].gamma - d_field[:, y_index, :])
+        /result["parameters"].gamma,
     )
     image = axes[1, 0].imshow(
         combined.T,
@@ -80,7 +81,7 @@ def plot_result(result, output):
         aspect="auto",
         cmap="plasma",
     )
-    axes[1, 0].set_title("Mid-y section: B in film, C outside")
+    axes[1, 0].set_title("Mid-y dimensionless section: B, C/gamma")
     axes[1, 0].set_xlabel("x")
     axes[1, 0].set_ylabel("z")
     figure.colorbar(image, ax=axes[1, 0])
@@ -93,8 +94,45 @@ def plot_result(result, output):
     )
     axes[1, 1].set_title("Spatially averaged fluxes")
     axes[1, 1].set_xlabel("time")
+    axes[1, 1].locator_params(axis="x", nbins=5)
     axes[1, 1].legend()
     figure.savefig(output / "curved_film_3d_summary.png", dpi=180)
+    plt.close(figure)
+
+    xx, yy = np.meshgrid(geometry["x"], geometry["y"], indexing="ij")
+    figure = plt.figure(figsize=(11, 5), constrained_layout=True)
+    surface_axis = figure.add_subplot(1, 2, 1, projection="3d")
+    surface = surface_axis.plot_surface(
+        xx,
+        yy,
+        geometry["height"],
+        cmap="viridis",
+        edgecolor="none",
+        alpha=0.9,
+    )
+    surface_axis.set_title("Spherical-cap film interface")
+    surface_axis.set_xlabel("x")
+    surface_axis.set_ylabel("y")
+    surface_axis.set_zlabel("z")
+    surface_axis.view_init(elev=28, azim=-58)
+    figure.colorbar(surface, ax=surface_axis, shrink=0.7, label="height")
+
+    flux_axis = figure.add_subplot(1, 2, 2, projection="3d")
+    scatter = flux_axis.scatter(
+        face[:, 0],
+        face[:, 1],
+        face[:, 2],
+        c=final_flux,
+        s=28,
+        cmap="plasma",
+    )
+    flux_axis.set_title("Non-axisymmetric interface flux")
+    flux_axis.set_xlabel("x")
+    flux_axis.set_ylabel("y")
+    flux_axis.set_zlabel("z")
+    flux_axis.view_init(elev=28, azim=-58)
+    figure.colorbar(scatter, ax=flux_axis, shrink=0.7, label="J")
+    figure.savefig(output / "curved_film_3d_surface.png", dpi=180)
     plt.close(figure)
 
 
