@@ -1,0 +1,35 @@
+{
+  "status": "posterior_only_no_fdm_feedback",
+  "surface_method": "curved_productintegral_local_film_dtn_full_heat_bie",
+  "film_tangential_diffusion_included": false,
+  "surface_grid": [4, 4],
+  "surface_panels": 32,
+  "fdm_grid": [8, 7, 108],
+  "fdm_length_z": 3.0,
+  "time_steps": 65,
+  "CV_nrmse": 0.016954585801949605,
+  "mean_reaction_flux_nrmse": 0.11809917340231597,
+  "total_reaction_flux_per_projected_area_nrmse": 0.016339045228493363,
+  "C_B_interface_mean_nrmse": 0.10174866057073319,
+  "C_C_over_gamma_interface_mean_nrmse": 0.010330752586086536,
+  "forward_peak": {
+    "current_relative_error": 0.02642738001003966,
+    "theta_absolute_error": 0.0
+  },
+  "reverse_peak": {
+    "current_relative_error": 0.025802544881250087,
+    "theta_absolute_error": 0.0
+  },
+  "max_closure_residual": 1.0419390350513424e-10,
+  "max_bie_boundary_residual": 2.6645352591003757e-15,
+  "geometry_area": {
+    "smooth_triangle_surface": 0.5895196859049091,
+    "voxel_staircase_surface": 0.7155555555555555,
+    "smooth_over_voxel": 0.8238629150845004
+  },
+  "external_prescribed_equal_total_flux_nrmse": 0.013444261287418515,
+  "flat_uniform_limit": {
+    "reaction_flux_nrmse_vs_1d": 0.0002871848964918192,
+    "CV_nrmse_vs_1d": 0.0002819773193784923
+  }
+}

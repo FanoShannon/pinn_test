@@ -80,6 +80,76 @@ def flat_periodic_square(n_side, length=1.0):
     )
 
 
+def periodic_cap_surface(
+    n_x=6,
+    n_y=6,
+    length_x=0.8,
+    length_y=0.7,
+    base_thickness=0.075,
+    cap_height=0.12,
+    cap_radius=0.26,
+    profile="spherical",
+):
+    """Triangulate a periodic curved graph above a planar electrode."""
+    n_x = int(n_x)
+    n_y = int(n_y)
+    if min(n_x, n_y) < 2:
+        raise ValueError("n_x and n_y must be at least 2")
+    length_x = float(length_x)
+    length_y = float(length_y)
+    base_thickness = float(base_thickness)
+    cap_height = float(cap_height)
+    cap_radius = float(cap_radius)
+    if min(length_x, length_y, base_thickness, cap_radius) <= 0.0:
+        raise ValueError("Surface lengths and base thickness must be positive")
+    if cap_height < 0.0 or cap_height > cap_radius:
+        raise ValueError("cap_height must lie in [0, cap_radius]")
+    if cap_radius >= 0.5 * min(length_x, length_y):
+        raise ValueError("cap_radius must fit inside the periodic cell")
+    if profile not in ("spherical", "cosine"):
+        raise ValueError("profile must be 'spherical' or 'cosine'")
+
+    x = np.linspace(-0.5 * length_x, 0.5 * length_x, n_x + 1)
+    y = np.linspace(-0.5 * length_y, 0.5 * length_y, n_y + 1)
+    xx, yy = np.meshgrid(x, y, indexing="ij")
+    radius = np.sqrt(xx ** 2 + yy ** 2)
+    rise = np.zeros_like(radius)
+    inside = radius < cap_radius
+    if cap_height > 0.0 and profile == "spherical":
+        sphere_radius = (
+            cap_radius ** 2 + cap_height ** 2
+        ) / (2.0 * cap_height)
+        rim_height = np.sqrt(sphere_radius ** 2 - cap_radius ** 2)
+        rise[inside] = (
+            np.sqrt(sphere_radius ** 2 - radius[inside] ** 2) - rim_height
+        )
+    elif cap_height > 0.0:
+        rise[inside] = 0.5 * cap_height * (
+            1.0 + np.cos(np.pi * radius[inside] / cap_radius)
+        )
+    vertices = np.column_stack((
+        xx.ravel(),
+        yy.ravel(),
+        (base_thickness + rise).ravel(),
+    ))
+
+    triangles = []
+    stride = n_y + 1
+    for i in range(n_x):
+        for j in range(n_y):
+            lower_left = i * stride + j
+            lower_right = (i + 1) * stride + j
+            upper_left = i * stride + j + 1
+            upper_right = (i + 1) * stride + j + 1
+            triangles.append((lower_left, lower_right, upper_right))
+            triangles.append((lower_left, upper_right, upper_left))
+    return TriangleSurface(
+        vertices,
+        np.asarray(triangles, dtype=np.int64),
+        periodic_lengths=(length_x, length_y),
+    )
+
+
 def spherical_cap_surface(n_radial=4, n_angular=16, radius=0.35,
                           cap_radius=0.25, base_height=0.075):
     """Triangulate a spherical minor cap without imposing axisymmetry in use."""
@@ -217,6 +287,50 @@ class AbelSplitHeatSingleLayer:
 
     def full_matrix(self, lag):
         return self.regular_matrix(lag) + np.eye(self.n_panels) * self.abel_kernel(lag)
+
+    def single_layer_matrix(self, lag):
+        """Return the standard heat single layer without the image factor two."""
+        return 0.5 * self.full_matrix(lag)
+
+    def normal_derivative_matrix(self, lag):
+        """Return the target-normal derivative of the standard single layer."""
+        lag = float(lag)
+        if lag <= 0.0:
+            raise ValueError("lag must be positive")
+        prefactor = 1.0 / (4.0 * np.pi * self.diffusion * lag) ** 1.5
+
+        def contribution(shift):
+            shifted_source = (
+                self.source_quadrature + np.asarray(shift)[None, None, :]
+            )
+            difference = (
+                self.centroids[:, None, None, :]
+                - shifted_source[None, :, :, :]
+            )
+            distance_squared = np.sum(difference ** 2, axis=3)
+            normal_distance = np.einsum(
+                "ipqc,ic->ipq", difference, self.surface.normals
+            )
+            kernel = (
+                -normal_distance
+                /(2.0 * self.diffusion * lag)
+                *prefactor
+                *np.exp(-distance_squared / (4.0 * self.diffusion * lag))
+            )
+            return np.sum(
+                kernel * self.source_weights[None, :, :], axis=2
+            )
+
+        matrix = contribution((0.0, 0.0, 0.0))
+        np.fill_diagonal(matrix, 0.0)
+        if self.surface.periodic_lengths is not None:
+            lx, ly = self.surface.periodic_lengths
+            for image_x in range(-self.periodic_images, self.periodic_images + 1):
+                for image_y in range(-self.periodic_images, self.periodic_images + 1):
+                    if image_x == 0 and image_y == 0:
+                        continue
+                    matrix += contribution((image_x * lx, image_y * ly, 0.0))
+        return matrix
 
 
 def abel_product_integral(time, flux, diffusion):

@@ -61,6 +61,11 @@ flowchart LR
 | `surface_heat_bem.py` | Abel-split triangular surface heat operator |
 | `analyze_surface_heat_bem_consistency.py` | Flat-limit and curved-cap consistency audit |
 | `results/surface_heat_bem_consistency.json` | Frozen surface-operator audit |
+| `curved_pi_dtn_bie.py` | End-to-end curved heat-BIE, film-DtN, reaction and CV solver |
+| `run_curved_pi_dtn_bie.py` | Grid-free curved forward simulation and diagnostics |
+| `validate_curved_pi_dtn_bie_fdm.py` | Long-external-domain monolithic FDM posterior |
+| `run_colab_curved_pi_dtn_bie.sh` | Curved solver and posterior Colab entry point |
+| `results/curved_pi_dtn_bie_fdm_metrics.json` | Frozen fair 3D posterior metrics |
 
 ## Documentation
 
@@ -73,6 +78,7 @@ flowchart LR
 - [Research and publication roadmap](docs/ROADMAP.md)
 - [True-3D curved-film research extension](docs/THREE_DIMENSIONAL_EXTENSION.md)
 - [Abel-consistent curved heat BEM](docs/CURVED_HEAT_BEM_CONSISTENCY.md)
+- [End-to-end curved PI-DtN-BIE solver](docs/CURVED_PI_DTN_BIE.md)
 
 ## Quick Test
 
@@ -91,10 +97,13 @@ The experimental curved-film branch has an additional independent smoke test:
 python -m unittest -v test_curved_film_3d.py
 python -m unittest -v test_curved_film_3d_fdm.py
 python -m unittest -v test_surface_heat_bem.py
+python -m unittest -v test_curved_pi_dtn_bie.py
 python run_curved_film_3d.py --output runs_curved_film_3d/prototype
 python analyze_curved_film_3d_convergence.py
 python validate_curved_film_3d_fdm.py
 python analyze_surface_heat_bem_consistency.py
+python run_curved_pi_dtn_bie.py
+python validate_curved_pi_dtn_bie_fdm.py
 ```
 
 Its Colab entry point is:
@@ -143,3 +152,9 @@ It proves numerically that the existing one-dimensional Abel history is the
 flat, translation-invariant limit of a common surface history operator, and it
 resolves non-axisymmetric traces on a spherical cap. It does not yet solve the
 complete heat boundary-integral equation or the two-boundary film DtN system.
+
+The `codex/full-curved-pi-dtn-bie` continuation closes the external Neumann
+BIE, local finite-thickness film DtN, panel reaction system, and CV current in
+one causal recurrence. The external volume is grid-free. Its first film block
+is column-local and therefore does not yet include tangential diffusion inside
+the curved film; this limitation is recorded in every result file.
