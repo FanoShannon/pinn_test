@@ -522,7 +522,7 @@ def simulate_curved_film_3d(
     dt = float(time[1] - time[0])
     if not np.allclose(np.diff(time), dt, rtol=1e-10, atol=1e-14):
         raise ValueError("The prototype currently requires a uniform time grid")
-    _, electrode = physics.triangular_protocol_numpy(time)
+    theta, electrode = physics.triangular_protocol_numpy(time)
     operator = CurvedFilm3DOperator(grid, parameters, dt)
     film, external, previous_flux = operator.initial_state()
     n_time = len(time)
@@ -590,6 +590,7 @@ def simulate_curved_film_3d(
     )
     result = {
         "time": time,
+        "theta": theta,
         "C_B_surface": electrode,
         "electrode_current_density": current,
         "mean_reaction_flux": weighted_mean_flux,

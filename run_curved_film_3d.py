@@ -135,6 +135,31 @@ def plot_result(result, output):
     figure.savefig(output / "curved_film_3d_surface.png", dpi=180)
     plt.close(figure)
 
+    switch = int(np.argmin(result["theta"]))
+    figure, axis = plt.subplots(figsize=(7, 5), constrained_layout=True)
+    axis.plot(
+        result["theta"][:switch + 1],
+        result["electrode_current_density"][:switch + 1],
+        color="#1261a0",
+        linewidth=2.2,
+        label="forward scan",
+    )
+    axis.plot(
+        result["theta"][switch:],
+        result["electrode_current_density"][switch:],
+        color="#c43c39",
+        linewidth=2.2,
+        label="reverse scan",
+    )
+    axis.axhline(0.0, color="black", linewidth=0.8, alpha=0.45)
+    axis.set_xlabel("dimensionless potential theta")
+    axis.set_ylabel("mean electrode current density")
+    axis.set_title("True-3D curved-film cyclic voltammogram")
+    axis.legend()
+    axis.grid(alpha=0.2)
+    figure.savefig(output / "curved_film_3d_cv.png", dpi=180)
+    plt.close(figure)
+
 
 def main():
     args = parse_args()
@@ -162,6 +187,7 @@ def main():
     np.savez_compressed(
         output / "curved_film_3d_results.npz",
         time=result["time"],
+        theta=result["theta"],
         electrode_current_density=result["electrode_current_density"],
         mean_reaction_flux=result["mean_reaction_flux"],
         J_face=result["J_face"],
