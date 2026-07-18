@@ -1,7 +1,9 @@
 # ProductIntegral-DtN-SOE Mainline
 
-This branch contains one method only: a zero-training, spatial-grid-free,
-causal operator for a layered electrochemical reaction-diffusion model.
+This branch preserves one production mainline method: a zero-training,
+spatial-grid-free, causal operator for a layered electrochemical
+reaction-diffusion model. It also contains a clearly separated true-3D
+curved-film research scaffold; that scaffold is not yet a grid-free claim.
 
 The solver composes four physical pieces:
 
@@ -49,6 +51,10 @@ flowchart LR
 | `invert_delta_from_cv.py` | Single-parameter thickness inversion |
 | `invert_multiscan_parameters.py` | Multi-scan joint inversion |
 | `run_colab_mainline.sh` | Single Colab entry point |
+| `curved_film_3d.py` | Experimental full-Cartesian curved-film DtN scaffold |
+| `run_curved_film_3d.py` | Three-dimensional prototype runner and diagnostics |
+| `analyze_curved_film_3d_convergence.py` | Three-level spatial resolution audit |
+| `results/curved_film_3d_prototype_results.json` | Frozen initial 3D audit |
 
 ## Documentation
 
@@ -59,6 +65,7 @@ flowchart LR
 - [FDM and related-work comparison](docs/RELATED_WORK.md)
 - [Reproduction commands](docs/REPRODUCIBILITY.md)
 - [Research and publication roadmap](docs/ROADMAP.md)
+- [True-3D curved-film research extension](docs/THREE_DIMENSIONAL_EXTENSION.md)
 
 ## Quick Test
 
@@ -69,6 +76,24 @@ python -m unittest -v \
   test_productintegral_dtn.py \
   test_differentiable_operator.py \
   test_multiscan_inversion.py
+```
+
+The experimental curved-film branch has an additional independent smoke test:
+
+```bash
+python -m unittest -v test_curved_film_3d.py
+python run_curved_film_3d.py --output runs_curved_film_3d/prototype
+python analyze_curved_film_3d_convergence.py
+```
+
+Its Colab entry point is:
+
+```bash
+git clone --branch codex/true-3d-curved-film-prototype \
+  https://github.com/FanoShannon/pinn_test.git /content/curved_film_3d
+
+OUTPUT_DIR=/content/gdrive/MyDrive/curved_film_3d/prototype \
+bash /content/curved_film_3d/run_colab_curved_film_3d.sh
 ```
 
 ## One Colab Entry Point
@@ -95,3 +120,9 @@ one-dimensional finite-film/half-space geometry.
 It is not yet a universal electrochemistry solver. Unequal diffusivities,
 finite electron-transfer kinetics, migration, convection, and multidimensional
 geometry are explicit research extensions rather than hidden claims.
+
+The curved-film module is intentionally labeled a research prototype. It keeps
+all Cartesian coordinates and performs an interface-only nonlinear solve, but
+its current DtN responses are generated from sparse volume operators. It is not
+yet the boundary-integral, volume-grid-free three-dimensional method described
+in the extension roadmap.

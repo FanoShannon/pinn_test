@@ -1,0 +1,44 @@
+{
+  "method": "full-Cartesian sparse-volume DtN condensation",
+  "status": "research_prototype",
+  "fdm_data_used": false,
+  "neural_network_used": false,
+  "symmetry_reduction": false,
+  "volume_grid_free": false,
+  "spherical_cap_smoke": {
+    "grid": [8, 7, 18],
+    "time_steps": 17,
+    "duration": 0.02,
+    "gamma": 10.0,
+    "k_cat": 1.0,
+    "n_interface_faces": 112,
+    "max_closure_residual": 7.619571640304912e-11,
+    "max_linear_reconstruction_residual": 3.552713678800501e-15,
+    "max_newton_iterations": 4,
+    "nonaxisymmetric_index": 0.10770862562260305,
+    "flux_spatial_cv": 0.152527764582843,
+    "final_mean_reaction_flux": 0.9075788562849575,
+    "final_electrode_current_density": -2.5407615525635614
+  },
+  "resolution_audit": {
+    "time_steps": 9,
+    "duration": 0.01,
+    "coarse": {
+      "grid": [6, 5, 15],
+      "n_interface_faces": 74,
+      "electrode_current_nrmse_vs_finest": 0.028535282493566936,
+      "mean_reaction_flux_nrmse_vs_finest": 0.06255252355429486
+    },
+    "medium": {
+      "grid": [8, 7, 20],
+      "n_interface_faces": 122,
+      "electrode_current_nrmse_vs_finest": 0.009115736135229412,
+      "mean_reaction_flux_nrmse_vs_finest": 0.048956594944421374
+    },
+    "fine": {
+      "grid": [10, 9, 25],
+      "n_interface_faces": 198
+    },
+    "interpretation": "Integrated current is more stable than the voxelized local interface flux; high-order curved panels are required next."
+  }
+}

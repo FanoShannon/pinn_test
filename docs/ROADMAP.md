@@ -76,6 +76,14 @@ maps, adsorption states, migration/Poisson coupling, and multidimensional
 corner corrections. Each requires a new transport operator or a hybrid domain
 decomposition; none should be implied by the current planar code.
 
+The first multidimensional scaffold is documented in
+[`THREE_DIMENSIONAL_EXTENSION.md`](THREE_DIMENSIONAL_EXTENSION.md). It uses a
+planar electrode, a positive-thickness curved film, full Cartesian fields, and
+non-axisymmetric interface kinetics. Its sparse-volume DtN condensation is a
+verification stage. The publication-grade target replaces those responses by
+curved heat-layer boundary operators with singular ProductIntegration and
+operator-valued fast history.
+
 ## Recommended JCTC Narrative
 
 1. General low-dimensional causal operator factorization.

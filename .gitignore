@@ -2,5 +2,6 @@ __pycache__/
 *.pyc
 *.log
 outputs/
+runs_curved_film_3d/
 *.npz
 *.png
