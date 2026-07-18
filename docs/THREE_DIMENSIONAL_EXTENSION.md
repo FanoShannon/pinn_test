@@ -208,3 +208,35 @@ but 4.90% for mean interface flux. This supports the boundary-condensation
 architecture while showing that voxelized surface geometry is not accurate
 enough for final local-flux claims. The frozen machine-readable audit is in
 [`results/curved_film_3d_prototype_results.json`](../results/curved_film_3d_prototype_results.json).
+
+## 8. Independent Monolithic FDM Posterior
+
+The posterior reference solves the film volume, external volume, and all
+interface fluxes in one sparse block Newton system. It does not use the
+precomputed DtN response or the condensed solution as an initial condition.
+On the same grid, the two formulations agree to machine precision:
+
+$$
+\max_t|J_{\mathrm{CV}}^{\mathrm{DtN}}-J_{\mathrm{CV}}^{\mathrm{FDM}}|
+=6.22\times10^{-15}.
+$$
+
+The accuracy posterior then compares the $8\times7\times18$, 65-step condensed
+operator against a $14\times13\times36$, 193-step monolithic FDM. The main
+results are:
+
+- CV NRMSE: 2.98%;
+- mean curved-interface flux NRMSE: 3.96%;
+- mean film-side interface concentration NRMSE: 4.00%;
+- mean external $C_C/\gamma$ interface concentration NRMSE: 0.37%;
+- forward peak-current relative error: 0.48%;
+- reverse peak-current relative error: 6.77%.
+
+The FDM reference itself changes by 0.74% in CV NRMSE between the
+$12\times11\times30$, 129-step and $14\times13\times36$, 193-step levels. Thus
+the approximately 3% global CV discrepancy is primarily coarse-operator
+geometry/time error rather than an unconverged reference, while the reverse
+peak remains the clearest target for improved curved-panel discretization.
+
+The frozen metrics are in
+[`results/curved_film_3d_fdm_validation.json`](../results/curved_film_3d_fdm_validation.json).

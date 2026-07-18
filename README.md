@@ -55,6 +55,9 @@ flowchart LR
 | `run_curved_film_3d.py` | Three-dimensional prototype runner and diagnostics |
 | `analyze_curved_film_3d_convergence.py` | Three-level spatial resolution audit |
 | `results/curved_film_3d_prototype_results.json` | Frozen initial 3D audit |
+| `curved_film_3d_fdm.py` | Posterior-only monolithic 3D FDM/FVM reference |
+| `validate_curved_film_3d_fdm.py` | Condensed-operator versus refined-FDM audit |
+| `results/curved_film_3d_fdm_validation.json` | Frozen 3D posterior metrics |
 
 ## Documentation
 
@@ -82,8 +85,10 @@ The experimental curved-film branch has an additional independent smoke test:
 
 ```bash
 python -m unittest -v test_curved_film_3d.py
+python -m unittest -v test_curved_film_3d_fdm.py
 python run_curved_film_3d.py --output runs_curved_film_3d/prototype
 python analyze_curved_film_3d_convergence.py
+python validate_curved_film_3d_fdm.py
 ```
 
 Its Colab entry point is:

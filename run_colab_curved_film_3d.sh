@@ -26,3 +26,12 @@ if [[ "${RUN_CONVERGENCE:-1}" == "1" ]]; then
     --steps "${CONVERGENCE_STEPS:-13}" \
     --duration "${CONVERGENCE_DURATION:-0.015}"
 fi
+
+if [[ "${RUN_FDM_VALIDATION:-1}" == "1" ]]; then
+  python validate_curved_film_3d_fdm.py \
+    --output "$OUTPUT_DIR/fdm_validation" \
+    --operator-grid "${OPERATOR_GRID:-8,7,18}" \
+    --operator-steps "${OPERATOR_STEPS:-65}" \
+    --fdm-grid "${FDM_GRID:-14,13,36}" \
+    --fdm-steps "${FDM_STEPS:-193}"
+fi

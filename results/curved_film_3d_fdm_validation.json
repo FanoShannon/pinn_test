@@ -1,0 +1,38 @@
+{
+  "status": "posterior_only_no_training",
+  "geometry": "positive-base spherical cap with non-axisymmetric kinetics",
+  "operator_resolution": {
+    "grid": [8, 7, 18],
+    "time_steps": 65
+  },
+  "refined_fdm_resolution": {
+    "grid": [14, 13, 36],
+    "time_steps": 193
+  },
+  "same_grid_algebraic_audit": {
+    "CV_max_abs": 6.217248937900877e-15,
+    "mean_flux_max_abs": 8.881784197001252e-16,
+    "J_face_max_abs": 1.2434497875801753e-14
+  },
+  "refined_fdm_posterior": {
+    "CV_nrmse": 0.029793196404019454,
+    "mean_reaction_flux_nrmse": 0.03963327359681075,
+    "C_B_interface_mean_nrmse": 0.04003048011285683,
+    "C_C_over_gamma_interface_mean_nrmse": 0.003676737586122571,
+    "C_B_inventory_mean_nrmse": 0.014243352574403366,
+    "C_D_over_gamma_inventory_mean_nrmse": 0.04222621025477727,
+    "forward_peak_current_relative_error": 0.00477669182534221,
+    "reverse_peak_current_relative_error": 0.06772361779605293,
+    "forward_peak_theta_abs_error": 0.2083333333333357,
+    "reverse_peak_theta_abs_error": 0.2083333333333357
+  },
+  "fdm_self_convergence": {
+    "medium_grid": [12, 11, 30],
+    "medium_time_steps": 129,
+    "fine_grid": [14, 13, 36],
+    "fine_time_steps": 193,
+    "CV_nrmse": 0.007406066390898134,
+    "mean_reaction_flux_nrmse": 0.007472028518080148
+  },
+  "interpretation": "The condensed closure is algebraically exact on a matched grid. The coarse operator CV agrees with refined FDM to about 3 percent globally; reverse-peak magnitude remains the largest discrepancy."
+}
