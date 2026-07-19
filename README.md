@@ -65,6 +65,9 @@ flowchart LR
 | `surface_modal_film_dtn.py` | Surface-FEM coupling of finite-film normal DtN modes |
 | `analyze_surface_modal_film_dtn.py` | Local-column versus surface-modal film ablation |
 | `results/surface_modal_film_dtn_ablation.json` | Frozen surface-modal posterior ablation |
+| `matched_geometry_fem.py` | Independent smooth-interface layered-tetra FEM posterior |
+| `analyze_matched_geometry_error.py` | Affine transport and nonlinear feedback error audit |
+| `results/matched_geometry_error_audit.json` | Frozen matched-geometry factorial |
 | `run_curved_pi_dtn_bie.py` | Grid-free curved forward simulation and diagnostics |
 | `validate_curved_pi_dtn_bie_fdm.py` | Long-external-domain monolithic FDM posterior |
 | `run_colab_curved_pi_dtn_bie.sh` | Curved solver and posterior Colab entry point |
@@ -83,6 +86,7 @@ flowchart LR
 - [Abel-consistent curved heat BEM](docs/CURVED_HEAT_BEM_CONSISTENCY.md)
 - [End-to-end curved PI-DtN-BIE solver](docs/CURVED_PI_DTN_BIE.md)
 - [Surface-modal curved-film DtN prototype](docs/SURFACE_MODAL_FILM_DTN.md)
+- [Matched-geometry operator error audit](docs/MATCHED_GEOMETRY_ERROR_AUDIT.md)
 
 ## Quick Test
 

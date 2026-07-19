@@ -1,0 +1,62 @@
+{
+  "status": "posterior_only_matched_smooth_geometry",
+  "main_operator_modified": false,
+  "fdm_file_used": false,
+  "fitted_correction_used": false,
+  "surface_panels": 32,
+  "time_steps": 65,
+  "film_layers": 18,
+  "external_layers": 72,
+  "reference_convergence": {
+    "normal_layer_CV_nrmse": 0.0000216462150250412,
+    "time_65_to_129_CV_nrmse": 0.0029154942179137953,
+    "time_65_to_129_flux_relative_rms": 0.0016010097474827736
+  },
+  "factorial": [
+    {
+      "geometry": "flat",
+      "kinetics": "uniform",
+      "CV_nrmse": 0.0011367870867382665,
+      "local_flux_relative_rms": 0.00181838301317126,
+      "prescribed_film_trace_relative_rms": 0.0007308156945084322,
+      "prescribed_external_trace_relative_rms": 0.009817501341818462
+    },
+    {
+      "geometry": "curved",
+      "kinetics": "uniform",
+      "CV_nrmse": 0.0018071799339841748,
+      "local_flux_relative_rms": 0.03612600878083076,
+      "prescribed_film_trace_relative_rms": 0.04726384576565833,
+      "prescribed_external_trace_relative_rms": 0.018890011410948863
+    },
+    {
+      "geometry": "flat",
+      "kinetics": "heterogeneous",
+      "CV_nrmse": 0.00623183428322413,
+      "local_flux_relative_rms": 0.0811599265558447,
+      "prescribed_film_trace_relative_rms": 0.07553123470542736,
+      "prescribed_external_trace_relative_rms": 0.017637139093939314
+    },
+    {
+      "geometry": "curved",
+      "kinetics": "heterogeneous",
+      "CV_nrmse": 0.008138936768609098,
+      "local_flux_relative_rms": 0.10530328570906816,
+      "prescribed_film_trace_relative_rms": 0.10178985757384151,
+      "prescribed_external_trace_relative_rms": 0.02351293480947506
+    }
+  ],
+  "curved_heterogeneous": {
+    "mean_C_B_interface_nrmse": 0.001232562601270093,
+    "mean_C_C_over_gamma_interface_nrmse": 0.006610560025968317,
+    "film_trace_effect_over_flux_rms": 0.0697301705113064,
+    "external_trace_effect_over_flux_rms": 0.004893378695460187,
+    "feedback_condition_mean": 1.5971736752032402,
+    "feedback_condition_max": 1.6991309523928182,
+    "C_B_constant_mode_relative_rms": 0.0019075588111497717,
+    "C_B_all_projected_modes_relative_rms": 0.035957905922005554,
+    "flux_constant_mode_relative_rms": 0.01154710730541872,
+    "flux_all_projected_modes_relative_rms": 0.04795299429696474
+  },
+  "conclusion": "Voxel geometry dominates the previous mean-trace discrepancy. Curvature/variable thickness and heterogeneous kinetics cause a real local-field limitation, while integrated CV and constant surface modes remain much more accurate."
+}

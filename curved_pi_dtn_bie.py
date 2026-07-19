@@ -518,6 +518,9 @@ def simulate_curved_pi_dtn_bie(
         ),
         "film_variable_thickness_basis_derivatives_included": False,
         "film_higher_order_curvature_terms_included": False,
+        "film_flat_lifting_tangential_included": (
+            bool(film.constant_thickness) if tangential_included else False
+        ),
         "volume_grid_used": False,
         "fdm_data_used": False,
         "neural_network_used": False,

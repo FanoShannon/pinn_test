@@ -153,6 +153,10 @@ class SurfaceModalFilmDtn:
         self.face_height = np.asarray(surface.centroids[:, 2], dtype=np.float64)
         if min(np.min(self.node_height), np.min(self.face_height)) <= 0.0:
             raise ValueError("All local film thicknesses must be positive")
+        thickness_scale = max(float(np.mean(self.node_height)), 1e-15)
+        self.constant_thickness = bool(
+            np.ptp(self.node_height) <= 1e-10 * thickness_scale
+        )
 
         self.face_flux_to_node_column_flux = (
             self.face_to_node / self.normal_z[None, :]
@@ -166,23 +170,54 @@ class SurfaceModalFilmDtn:
         identity = np.eye(len(self.node_height), dtype=np.float64)
         self.decay = []
         self.gain = []
-        self.flux_response = []
+        self.current_flux_response = []
+        self.previous_flux_response = []
         for mode_index, sign in enumerate(self.sign):
             mu = self.mu[:, mode_index]
             generator = self.diffusion * (laplace + np.diag(mu ** 2))
             decay = linalg.expm(-self.dt * generator)
             gain = np.linalg.solve(generator, identity - decay)
+            inverse_generator = np.linalg.solve(generator, identity)
+            first_moment = (
+                inverse_generator @ gain
+                -self.dt * inverse_generator @ decay
+            )
+            linear_left = first_moment / self.dt
+            linear_right = gain - linear_left
             flux_coefficient = 2.0 * sign /(
                 self.node_height * self.diffusion * mu ** 2
             )
-            response = (
+            derivative_response = (
                 gain
                 @ np.diag(flux_coefficient / self.dt)
                 @ self.face_flux_to_node_column_flux
             )
+            lifting_coefficient = 2.0 * sign /(
+                self.node_height * mu ** 2
+            )
+            if self.constant_thickness:
+                tangential_forcing = (
+                    np.diag(lifting_coefficient)
+                    @ laplace
+                    @ self.face_flux_to_node_column_flux
+                )
+            else:
+                # Variable h also generates basis-gradient and curvature terms.
+                # Adding only the flat lifting term is inconsistent and can make
+                # the current-cell response nonphysical.
+                tangential_forcing = np.zeros(
+                    (self.n_nodes, len(self.normal_z)), dtype=np.float64
+                )
+            current_response = (
+                derivative_response + linear_right @ tangential_forcing
+            )
+            previous_response = (
+                -derivative_response + linear_left @ tangential_forcing
+            )
             self.decay.append(decay)
             self.gain.append(gain)
-            self.flux_response.append(response)
+            self.current_flux_response.append(current_response)
+            self.previous_flux_response.append(previous_response)
 
     @property
     def n_nodes(self):
@@ -220,11 +255,12 @@ class SurfaceModalFilmDtn:
             electrode_forcing = -2.0 * surface_slope /(
                 self.node_height * mu
             )
-            response = self.flux_response[mode_index]
+            response = self.current_flux_response[mode_index]
             intercept = (
                 self.decay[mode_index] @ previous_amplitudes[:, mode_index]
                 +self.gain[mode_index] @ electrode_forcing
-                -response @ previous_surface_flux
+                +self.previous_flux_response[mode_index]
+                @ previous_surface_flux
             )
             amplitude_intercept[:, mode_index] = intercept
             b_intercept += sign * (self.node_to_face @ intercept)
@@ -236,7 +272,7 @@ class SurfaceModalFilmDtn:
         surface_flux = np.asarray(surface_flux, dtype=np.float64)
         for mode_index in range(self.n_modes):
             amplitudes[:, mode_index] += (
-                self.flux_response[mode_index] @ surface_flux
+                self.current_flux_response[mode_index] @ surface_flux
             )
         return amplitudes
 
@@ -263,4 +299,3 @@ class SurfaceModalFilmDtn:
     def constant_mode_residual(self):
         ones = np.ones(self.n_nodes, dtype=np.float64)
         return float(np.max(np.abs(self.fem["laplace_beltrami"] @ ones)))
-

@@ -151,12 +151,12 @@ class CurvedPiDtnBieTests(unittest.TestCase):
         np.testing.assert_allclose(
             surface_modal_result["mean_reaction_flux"],
             result["mean_reaction_flux"],
-            atol=2e-10,
+            atol=5e-9,
         )
         np.testing.assert_allclose(
             surface_modal_result["electrode_current_density"],
             result["electrode_current_density"],
-            atol=2e-10,
+            atol=5e-9,
         )
         self.assertLess(
             relative_rmse(

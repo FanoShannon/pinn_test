@@ -50,6 +50,19 @@ $$
 
 The external BIE and nonlinear reaction closure are unchanged.
 
+For spatially varying flux on a flat constant-thickness film, the lifting
+term also contributes
+
+$$
+-\frac{2(-1)^m}{h\mu_m^2}\Delta_\Gamma q.
+$$
+
+The implementation integrates this forcing exactly for a piecewise-linear
+time history. It is enabled only for constant thickness. For variable
+thickness, adding this flat term without the associated basis-gradient and
+curvature terms is inconsistent and can make the current-cell response
+nonphysical.
+
 ## 3. Exact Flat Limit
 
 For a flat film of constant thickness, let \(\lambda_\ell\) be an eigenvalue of
@@ -67,8 +80,8 @@ and a nonzero tangential eigenmode.
 
 When \(h=h(\mathbf s)\), differentiating the normal basis also produces terms
 containing \(\nabla_\Gamma h\), curvature, and coupling between normal modes.
-The first prototype does not include those terms. It uses the local thickness
-inside \(\mu_m\) while propagating amplitudes with the top-interface
+The first curved prototype does not include those terms. It uses the local
+thickness inside \(\mu_m\) while propagating amplitudes with the top-interface
 Laplace--Beltrami operator. Result files therefore record:
 
 - `film_variable_thickness_basis_derivatives_included=false`;
@@ -77,6 +90,11 @@ Laplace--Beltrami operator. Result files therefore record:
 The implementation is best interpreted as a frozen-normal-basis thin-shell
 DtN. A complete version requires either the missing geometric coupling matrices
 or a two-boundary film heat BIE.
+
+The later matched-geometry audit showed that this frozen curved model should
+not be promoted as the general correction. Its flat lifting term improves a
+flat heterogeneous prescribed-flux film trace only from 7.55% to 7.31%, and it
+cannot consistently represent variable-thickness geometric coupling.
 
 ## 5. First Posterior Ablation
 
