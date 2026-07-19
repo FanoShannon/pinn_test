@@ -1,0 +1,66 @@
+{
+  "status": "posterior_ablation_no_fdm_feedback",
+  "surface_grid": [4, 4],
+  "surface_panels": 32,
+  "time_steps": 65,
+  "fdm_grid": [8, 7, 108],
+  "fdm_length_z": 3.0,
+  "fdm_data_used_in_forward": false,
+  "records": [
+    {
+      "film_model": "local",
+      "tangential_strength": null,
+      "CV_nrmse_vs_fdm": 0.016954585801949605,
+      "total_flux_nrmse_vs_fdm": 0.016339045228493363,
+      "C_B_mean_nrmse_vs_fdm": 0.10174866057073319,
+      "C_C_over_gamma_mean_nrmse_vs_fdm": 0.010330752586086536
+    },
+    {
+      "film_model": "surface_modal",
+      "tangential_strength": 0.0,
+      "CV_nrmse_vs_fdm": 0.016885492350922793,
+      "CV_nrmse_vs_local": 0.0013430796762790827,
+      "total_flux_nrmse_vs_fdm": 0.016402398232844215,
+      "C_B_mean_nrmse_vs_fdm": 0.10163705378570968,
+      "C_C_over_gamma_mean_nrmse_vs_fdm": 0.010337942993621483
+    },
+    {
+      "film_model": "surface_modal",
+      "tangential_strength": 0.1,
+      "CV_nrmse_vs_fdm": 0.016912845247635533,
+      "CV_nrmse_vs_local": 0.0014416285926776276,
+      "total_flux_nrmse_vs_fdm": 0.01640158645688544,
+      "C_B_mean_nrmse_vs_fdm": 0.10166209558534288,
+      "C_C_over_gamma_mean_nrmse_vs_fdm": 0.010329147286178869
+    },
+    {
+      "film_model": "surface_modal",
+      "tangential_strength": 0.25,
+      "CV_nrmse_vs_fdm": 0.016948729559244802,
+      "CV_nrmse_vs_local": 0.001576465559139487,
+      "total_flux_nrmse_vs_fdm": 0.01640385013078028,
+      "C_B_mean_nrmse_vs_fdm": 0.10169314571916942,
+      "C_C_over_gamma_mean_nrmse_vs_fdm": 0.010317950934749307
+    },
+    {
+      "film_model": "surface_modal",
+      "tangential_strength": 0.5,
+      "CV_nrmse_vs_fdm": 0.01699822273523671,
+      "CV_nrmse_vs_local": 0.0017703734072770534,
+      "total_flux_nrmse_vs_fdm": 0.01641253210718592,
+      "C_B_mean_nrmse_vs_fdm": 0.10173311979947706,
+      "C_C_over_gamma_mean_nrmse_vs_fdm": 0.01030311443461252
+    },
+    {
+      "film_model": "surface_modal",
+      "tangential_strength": 1.0,
+      "CV_nrmse_vs_fdm": 0.017071902304283966,
+      "CV_nrmse_vs_local": 0.0020715615360945485,
+      "total_flux_nrmse_vs_fdm": 0.016435821768870002,
+      "C_B_mean_nrmse_vs_fdm": 0.10178720249024524,
+      "C_C_over_gamma_mean_nrmse_vs_fdm": 0.01028234502323783
+    }
+  ],
+  "conclusion": "The physical alpha=1 tangential coupling changes the CV by 0.21% NRMSE relative to the local film model and does not improve this voxel-FDM posterior. Geometry mismatch dominates the mean film-interface discrepancy.",
+  "model_boundary": "Variable-thickness normal-basis derivatives and higher-order curvature coupling are not included."
+}

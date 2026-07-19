@@ -76,6 +76,12 @@ direction and reproduces the planar finite-slab solver. It is currently local
 between columns: tangential diffusion inside the film is not included. The
 external BIE is fully surface-coupled.
 
+An optional surface-modal research block promotes the normal-mode amplitudes
+to P1 fields on the interface and couples them with a Laplace--Beltrami
+operator. It exactly preserves the flat constant mode, but its current
+variable-thickness implementation freezes derivatives of the local normal
+basis. See [the dedicated ablation](SURFACE_MODAL_FILM_DTN.md).
+
 ## 4. Interface-Only Nonlinear Solve
 
 Combining both affine traces gives
@@ -126,7 +132,8 @@ This branch is an end-to-end curved CV solver, but not yet the final fast 3D
 method:
 
 1. film tangential diffusion still requires a coupled two-surface film BIE or
-   another body-fitted surface response;
+   a geometrically complete surface-modal response; the first surface-modal
+   ablation omits variable-basis and higher-order curvature terms;
 2. direct matrix history costs \(O(N_t^2N_\Gamma^2)\);
 3. periodic images must be replaced by an Ewald/FMM or periodic-kernel backend;
 4. the voxel FDM should be supplemented by cut-cell FVM or FEM for local-field

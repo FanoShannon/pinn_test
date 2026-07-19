@@ -52,6 +52,12 @@ def parse_args():
     parser.add_argument("--periodic-images", type=int, default=3)
     parser.add_argument("--history-quadrature", type=int, default=6)
     parser.add_argument("--film-modes", type=int, default=64)
+    parser.add_argument(
+        "--film-model",
+        choices=("local", "surface_modal"),
+        default="surface_modal",
+    )
+    parser.add_argument("--film-tangential-strength", type=float, default=1.0)
     return parser.parse_args()
 
 
@@ -83,6 +89,8 @@ def main():
         n_film_modes=args.film_modes,
         history_quadrature=args.history_quadrature,
         max_iterations=30,
+        film_model=args.film_model,
+        film_tangential_strength=args.film_tangential_strength,
     )
     bie_seconds = wall_time.perf_counter() - start
 
@@ -176,6 +184,9 @@ def main():
         "film_tangential_diffusion_included": bie[
             "film_tangential_diffusion_included"
         ],
+        "film_model": bie["film_model"],
+        "film_tangential_strength": bie["film_tangential_strength"],
+        "film_constant_mode_residual": bie["film_constant_mode_residual"],
         "surface_grid": [surface_nx, surface_ny],
         "surface_panels": int(bie["J_face"].shape[1]),
         "fdm_grid": [fdm_nx, fdm_ny, fdm_nz],
@@ -223,9 +234,9 @@ def main():
         ),
         "interpretation": (
             "The posterior compares a smooth periodic triangular interface and "
-            "local-column film DtN against a finite-box voxel FDM. The remaining "
+            f"{args.film_model} film DtN against a finite-box voxel FDM. The remaining "
             "difference includes FDM boundary/time error, geometry mismatch, and "
-            "the omitted film tangential diffusion."
+            "any film-model approximation."
         ),
     }
     (output / "curved_pi_dtn_bie_fdm_metrics.json").write_text(

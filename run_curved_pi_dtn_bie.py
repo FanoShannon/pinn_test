@@ -30,6 +30,12 @@ def parse_args():
     parser.add_argument("--heterogeneity-x", type=float, default=0.55)
     parser.add_argument("--heterogeneity-xy", type=float, default=0.25)
     parser.add_argument("--film-modes", type=int, default=64)
+    parser.add_argument(
+        "--film-model",
+        choices=("local", "surface_modal"),
+        default="surface_modal",
+    )
+    parser.add_argument("--film-tangential-strength", type=float, default=1.0)
     parser.add_argument("--history-quadrature", type=int, default=6)
     return parser.parse_args()
 
@@ -62,6 +68,8 @@ def main():
         n_film_modes=args.film_modes,
         history_quadrature=args.history_quadrature,
         max_iterations=30,
+        film_model=args.film_model,
+        film_tangential_strength=args.film_tangential_strength,
     )
     elapsed = wall_time.perf_counter() - start
     area = result["face_area"]
@@ -74,6 +82,15 @@ def main():
         "film_two_boundary_dtn": result["film_two_boundary_dtn"],
         "film_tangential_diffusion_included": result[
             "film_tangential_diffusion_included"
+        ],
+        "film_model": result["film_model"],
+        "film_tangential_strength": result["film_tangential_strength"],
+        "film_surface_nodes": result["film_surface_nodes"],
+        "film_constant_mode_residual": result[
+            "film_constant_mode_residual"
+        ],
+        "film_variable_thickness_basis_derivatives_included": result[
+            "film_variable_thickness_basis_derivatives_included"
         ],
         "volume_grid_used": result["volume_grid_used"],
         "fdm_data_used": result["fdm_data_used"],

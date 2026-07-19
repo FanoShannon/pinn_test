@@ -12,6 +12,7 @@ import numpy as np
 
 import physical_model as physics
 import surface_heat_bem as heat_bem
+import surface_modal_film_dtn as surface_film
 
 
 @dataclass(frozen=True)
@@ -364,6 +365,8 @@ def simulate_curved_pi_dtn_bie(
     n_film_modes=64,
     history_quadrature=6,
     max_iterations=20,
+    film_model="local",
+    film_tangential_strength=1.0,
 ):
     """Run the complete interface-only curved reaction-diffusion recurrence."""
     config = CurvedSurfaceConfig() if config is None else config
@@ -391,13 +394,25 @@ def simulate_curved_pi_dtn_bie(
         periodic_images=config.periodic_images,
         quadrature_order=history_quadrature,
     )
-    film = LocalColumnFilmDtn(
-        surface.centroids[:, 2],
-        normal_z,
-        parameters.diffusion_b,
-        dt,
-        n_modes=n_film_modes,
-    )
+    if film_model == "local":
+        film = LocalColumnFilmDtn(
+            surface.centroids[:, 2],
+            normal_z,
+            parameters.diffusion_b,
+            dt,
+            n_modes=n_film_modes,
+        )
+    elif film_model == "surface_modal":
+        film = surface_film.SurfaceModalFilmDtn(
+            surface,
+            normal_z,
+            parameters.diffusion_b,
+            dt,
+            n_modes=n_film_modes,
+            tangential_strength=film_tangential_strength,
+        )
+    else:
+        raise ValueError("film_model must be 'local' or 'surface_modal'")
 
     x_scale = max(0.5 * config.length_x, 1e-15)
     y_scale = max(0.5 * config.length_y, 1e-15)
@@ -483,11 +498,26 @@ def simulate_curved_pi_dtn_bie(
         np.sqrt(np.mean((final_flux - final_flux[partner]) ** 2))
         /max(np.sqrt(np.mean(final_flux ** 2)), 1e-15)
     )
+    tangential_included = film_model == "surface_modal"
     return {
-        "method": "curved_productintegral_local_film_dtn_full_heat_bie",
+        "method": (
+            "curved_productintegral_surface_modal_film_dtn_full_heat_bie"
+            if tangential_included
+            else "curved_productintegral_local_film_dtn_full_heat_bie"
+        ),
         "full_external_heat_bie": True,
         "film_two_boundary_dtn": True,
-        "film_tangential_diffusion_included": False,
+        "film_tangential_diffusion_included": tangential_included,
+        "film_model": film_model,
+        "film_tangential_strength": float(film_tangential_strength),
+        "film_surface_nodes": (
+            int(film.n_nodes) if tangential_included else 0
+        ),
+        "film_constant_mode_residual": (
+            film.constant_mode_residual() if tangential_included else 0.0
+        ),
+        "film_variable_thickness_basis_derivatives_included": False,
+        "film_higher_order_curvature_terms_included": False,
         "volume_grid_used": False,
         "fdm_data_used": False,
         "neural_network_used": False,

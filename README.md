@@ -62,6 +62,9 @@ flowchart LR
 | `analyze_surface_heat_bem_consistency.py` | Flat-limit and curved-cap consistency audit |
 | `results/surface_heat_bem_consistency.json` | Frozen surface-operator audit |
 | `curved_pi_dtn_bie.py` | End-to-end curved heat-BIE, film-DtN, reaction and CV solver |
+| `surface_modal_film_dtn.py` | Surface-FEM coupling of finite-film normal DtN modes |
+| `analyze_surface_modal_film_dtn.py` | Local-column versus surface-modal film ablation |
+| `results/surface_modal_film_dtn_ablation.json` | Frozen surface-modal posterior ablation |
 | `run_curved_pi_dtn_bie.py` | Grid-free curved forward simulation and diagnostics |
 | `validate_curved_pi_dtn_bie_fdm.py` | Long-external-domain monolithic FDM posterior |
 | `run_colab_curved_pi_dtn_bie.sh` | Curved solver and posterior Colab entry point |
@@ -79,6 +82,7 @@ flowchart LR
 - [True-3D curved-film research extension](docs/THREE_DIMENSIONAL_EXTENSION.md)
 - [Abel-consistent curved heat BEM](docs/CURVED_HEAT_BEM_CONSISTENCY.md)
 - [End-to-end curved PI-DtN-BIE solver](docs/CURVED_PI_DTN_BIE.md)
+- [Surface-modal curved-film DtN prototype](docs/SURFACE_MODAL_FILM_DTN.md)
 
 ## Quick Test
 
@@ -158,3 +162,10 @@ BIE, local finite-thickness film DtN, panel reaction system, and CV current in
 one causal recurrence. The external volume is grid-free. Its first film block
 is column-local and therefore does not yet include tangential diffusion inside
 the curved film; this limitation is recorded in every result file.
+
+The `codex/surface-modal-film-dtn` experiment adds Laplace--Beltrami coupling
+between the normal film modes. It exactly preserves the flat constant surface
+mode, but its first variable-thickness form freezes derivatives of the local
+normal basis. The default spherical-cap posterior shows only a small CV effect,
+so it is retained as a documented research ablation rather than promoted over
+the local-column production baseline.
